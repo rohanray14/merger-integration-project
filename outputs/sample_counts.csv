@@ -4,3 +4,5 @@ time,step,deals_in,deals_out,dropped,note
 2026-10-10T22:00:28,02_link_filings,901,250,651,pre_acq=365 pre_tgt=822 post=344
 2026-10-10T22:16:55,02_link_filings,901,687,214,pre_acq=834 pre_tgt=829 post=777
 2026-10-10T22:30:35,02_link_filings,901,687,214,pre_acq=834 pre_tgt=829 post=777
+2026-10-10T23:21:52,03_extract_sections,894,619,275,paragraphs=548942
+2026-10-10T23:33:48,04_build_labels,888,723,165,dummy_rate=0.271
