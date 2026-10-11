@@ -1,0 +1,35 @@
+paths:
+  data: data                 # symlink to Dropbox
+  raw: data/raw
+  interim: data/interim
+  processed: data/processed
+  outputs: outputs
+  sdc_target: data/raw/tar1980_2024_ma_with_gvkey.csv   # SDC with target gvkey
+  sdc_acquirer: data/raw/acq1980_2024_V2.dta            # SDC with acquirer gvkey
+  gvkey_cik_link: data/raw/gvkey_cik_link.csv            # from WRDS SEC Analytics
+  cik_cusip_map: data/raw/cik-cusip-maps.csv             # CUSIP-6 to CIK crosswalk (fallback)
+
+sample:
+  announce_years: [2000, 2001, 2002, 2003, 2004]
+  status: C                  # completed deals only
+  require_both_public: true
+  form_types: ["10-K", "10-K405", "10-KSB", "10-KSB40"]
+
+model:
+  family: "manelalab/chrono-bert-v1-{y}1231"
+  lag: 1                     # vintage = announce year - lag
+  max_tokens: 1024
+  pooling: mean              # average chunk embeddings per section
+
+label:
+  post_years: 3              # acquirer 10-Ks 1..3 years after completion
+  exclude_risk_factors: true
+  acquisition_words: [merger, mergers, merged, acquisition, acquisitions, acquired]
+  integration_words: [integration, integrate, integrating]
+  difficulty_words: [challenge, challenging, difficulties, difficulty, inability, failure, unsuccessful, "substantial expense"]
+
+fit:
+  test_share: 0.25
+  split: time                # "time" or "random"
+  seed: 0
+  input_sets: [item1, mdna, both, acquirer_only]
