@@ -1,3 +1,4 @@
 time,step,deals_in,deals_out,dropped,note
 2026-10-09T20:40:08,02a_link_cusip_cik,162985,55463,107522,acq=87954 tgt=61453 both=55463
 2026-10-10T21:41:53,01_select_deals,162985,901,162084,"status=C years=[2000, 2001, 2002, 2003, 2004] both_US both_CIK"
+2026-10-10T22:00:28,02_link_filings,901,250,651,pre_acq=365 pre_tgt=822 post=344
