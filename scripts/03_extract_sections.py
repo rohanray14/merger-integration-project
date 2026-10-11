@@ -3,6 +3,7 @@
 Reads  : data/interim/filings.parquet
 Writes : data/interim/sections.parquet
 """
+import re
 import time
 import requests
 import pandas as pd
@@ -11,26 +12,52 @@ from integrability.counts import log_step
 from integrability.sections import strip_html, extract, to_paragraphs
 
 HEADERS = {"User-Agent": "Rohan Ray rohan.ray.26@dartmouth.edu"}
-ARCHIVES = "https://www.sec.gov/Archives/edgar/data/{cik}/{acc_path}/{doc}"
+EDGAR_BASE = "https://www.sec.gov/Archives/edgar/data"
+_10K_TYPES = {"10-K", "10-K405", "10-KSB", "10-KSB40"}
 
 
-def _build_url(row: pd.Series) -> str:
-    """Build the EDGAR URL for a filing's primary document."""
-    cik = str(row["cik"]).lstrip("0")
-    acc_path = row["accessionNumber"].replace("-", "")
-    doc = row["primaryDocument"]
-    return ARCHIVES.format(cik=cik, acc_path=acc_path, doc=doc)
+def _extract_10k_from_sgml(sgml_text: str) -> str | None:
+    """Parse the full SGML submission and return the 10-K document text."""
+    docs = re.split(r"<DOCUMENT>", sgml_text)
+    for doc in docs[1:]:
+        type_m = re.search(r"<TYPE>([^\n]+)", doc)
+        if type_m and type_m.group(1).strip() in _10K_TYPES:
+            # Strip the SGML header/footer
+            text_m = re.search(r"<TEXT>(.*?)(?:</TEXT>|</DOCUMENT>)", doc, re.S)
+            if text_m:
+                return text_m.group(1)
+            return doc
+    return None
 
 
-def _download(url: str) -> str | None:
-    """Download a filing document from EDGAR. Returns text or None on failure."""
+def _download(cik: str, accession: str, primary_doc: str) -> str | None:
+    """Download a 10-K filing from EDGAR. Returns raw text or None on failure."""
+    cik_clean = str(cik).lstrip("0")
+    accn_path = accession.replace("-", "")
+
+    # Strategy 1: use primaryDocument directly if available
+    if primary_doc:
+        url = f"{EDGAR_BASE}/{cik_clean}/{accn_path}/{primary_doc}"
+        try:
+            resp = requests.get(url, headers=HEADERS, timeout=60)
+            resp.raise_for_status()
+            return resp.text
+        except Exception:
+            pass  # fall through to SGML
+
+    # Strategy 2: download the full SGML submission and extract the 10-K
+    sgml_url = f"{EDGAR_BASE}/{cik_clean}/{accn_path}/{accession}.txt"
     try:
-        resp = requests.get(url, headers=HEADERS, timeout=60)
+        resp = requests.get(sgml_url, headers=HEADERS, timeout=60)
         resp.raise_for_status()
-        return resp.text
-    except Exception as e:
-        print(f"  WARNING: download failed {url}: {e}")
-        return None
+        doc_text = _extract_10k_from_sgml(resp.text)
+        if doc_text:
+            return doc_text
+    except Exception:
+        pass
+
+    print(f"  WARNING: {accession} — could not download")
+    return None
 
 
 def main():
@@ -56,8 +83,7 @@ def main():
         if (i + 1) % 25 == 0 or i == 0:
             print(f"  Processing {i + 1}/{n} ...")
 
-        url = _build_url(row)
-        raw = _download(url)
+        raw = _download(row["cik"], acc, row["primaryDocument"])
         if raw is None:
             extracted[acc] = {"item1": None, "item7": None}
             continue
