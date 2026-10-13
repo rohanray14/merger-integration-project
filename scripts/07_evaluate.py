@@ -52,7 +52,10 @@ def main():
         print(f"  {input_set}: AUC={auc:.3f} (n={n}, pos={n_pos})")
 
     # ── Baseline: habit only ────────────────────────────────────────────────
-    test_deals = set(preds["dealnum"].unique())
+    # Use the exact same deals as the embedding models (pick any input_set;
+    # they all share the same deal set after the common-sample filter in 06_fit).
+    first_set = preds["input_set"].iloc[0]
+    test_deals = set(preds.loc[preds["input_set"] == first_set, "dealnum"])
     test_labels = labels[labels["dealnum"].isin(test_deals)].copy()
 
     if "pre_habit" in test_labels.columns and len(test_labels) > 0:
@@ -81,7 +84,9 @@ def main():
         test_deal_info["same_sic3"] = (
             test_deal_info["asic3"] == test_deal_info["tsic3"]
         ).astype(int)
-        merged = test_deal_info.merge(labels[["dealnum", "hit"]], on="dealnum")
+        merged = test_deal_info.merge(
+            test_labels[["dealnum", "hit"]], on="dealnum"
+        )
         if len(merged) > 0:
             ind_auc = _safe_auc(merged["hit"], merged["same_sic3"])
             results.append({

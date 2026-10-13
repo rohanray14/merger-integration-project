@@ -6,3 +6,8 @@ time,step,deals_in,deals_out,dropped,note
 2026-10-10T22:30:35,02_link_filings,901,687,214,pre_acq=834 pre_tgt=829 post=777
 2026-10-10T23:21:52,03_extract_sections,894,619,275,paragraphs=548942
 2026-10-10T23:33:48,04_build_labels,888,723,165,dummy_rate=0.271
+2026-10-12T21:13:27,06_fit,709,125,584,"input_sets=['item1', 'mdna', 'both', 'acquirer_only']"
+2026-10-12T21:15:07,06_fit,709,159,550,"input_sets=['item1', 'mdna', 'both', 'acquirer_only']"
+2026-10-12T21:15:14,07_evaluate,159,159,0,models=7
+2026-10-13T14:50:43,06_fit,295,74,221,"input_sets=['item1', 'mdna', 'both', 'acquirer_only', 'acquirer_item1']"
+2026-10-13T14:50:49,07_evaluate,74,74,0,models=8

@@ -5,6 +5,7 @@ Input sets (from config.yaml):
   - mdna:          acquirer_item7 + target_item7
   - both:          all four embedding vectors
   - acquirer_only: acquirer_item1 + acquirer_item7
+  - acquirer_item1: acquirer_item1 only
 
 Reads  : data/processed/embeddings/, data/processed/labels.parquet
 Writes : outputs/models/, outputs/predictions.parquet
@@ -25,41 +26,60 @@ INPUT_COLS = {
     "mdna": ["acquirer_item7", "target_item7"],
     "both": ["acquirer_item1", "target_item1", "acquirer_item7", "target_item7"],
     "acquirer_only": ["acquirer_item1", "acquirer_item7"],
+    "acquirer_item1": ["acquirer_item1"],
 }
 
 
-def _build_features(emb_data: dict, dealnums: np.ndarray,
+def _build_emb_indices(dealnums: np.ndarray, meta: pd.DataFrame) -> dict[str, dict]:
+    """Build per-column mapping from dealnum -> row index in the npz array.
+
+    The npz arrays are saved with dropna(), so each column has a different
+    length. The order matches the non-NaN rows in metadata, which shares
+    the same dealnum order as the dealnums array.
+    """
+    col_map = {}
+    for col in ["acquirer_item1", "target_item1", "acquirer_item7", "target_item7"]:
+        n_col = f"{col}_n"
+        if n_col not in meta.columns:
+            continue
+        # Deals with a non-NaN count have an embedding, in order
+        has = meta[n_col].notna()
+        deal_to_idx = {}
+        for arr_idx, (_, row) in enumerate(meta[has].iterrows()):
+            deal_to_idx[row["dealnum"]] = arr_idx
+        col_map[col] = deal_to_idx
+    return col_map
+
+
+def _build_features(emb_data: dict, col_indices: dict[str, dict],
                      cols: list[str], deal_set: set) -> tuple[np.ndarray, np.ndarray]:
     """Build feature matrix X and corresponding dealnum array for deals in deal_set.
 
     Returns (X, filtered_dealnums). Deals missing any required column are dropped.
     """
-    mask = np.array([d in deal_set for d in dealnums])
-    idx = np.where(mask)[0]
-
-    # Check which deals have all required columns
-    valid = []
+    # Find deals that are in deal_set AND have all required columns
+    valid_deals = []
     rows = []
-    for i in idx:
+
+    # Start with deals that have all columns
+    candidates = deal_set.copy()
+    for col in cols:
+        if col not in col_indices:
+            return np.empty((0, 0)), np.array([])
+        candidates &= set(col_indices[col].keys())
+
+    for dn in sorted(candidates):
         parts = []
-        skip = False
         for col in cols:
-            if col not in emb_data:
-                skip = True
-                break
-            arr = emb_data[col]
-            if i >= len(arr):
-                skip = True
-                break
-            parts.append(arr[i])
-        if not skip:
-            rows.append(np.concatenate(parts))
-            valid.append(i)
+            arr_idx = col_indices[col][dn]
+            parts.append(emb_data[col][arr_idx])
+        rows.append(np.concatenate(parts))
+        valid_deals.append(dn)
 
     if not rows:
         return np.empty((0, 0)), np.array([])
 
-    return np.stack(rows), dealnums[valid]
+    return np.stack(rows), np.array(valid_deals)
 
 
 def main():
@@ -73,7 +93,10 @@ def main():
     emb_data = dict(np.load(emb_dir / "embeddings.npz", allow_pickle=True))
     dealnums = emb_data.pop("dealnums")
     meta = pd.read_parquet(emb_dir / "metadata.parquet")
+    col_indices = _build_emb_indices(dealnums, meta)
     print(f"Loaded embeddings for {len(dealnums)} deals")
+    for col, idx_map in col_indices.items():
+        print(f"  {col}: {len(idx_map)} deals")
 
     # ── Load labels ─────────────────────────────────────────────────────────
     labels = pd.read_parquet(paths["processed"] / "labels.parquet")
@@ -84,11 +107,16 @@ def main():
     deals = pd.read_parquet(paths["interim"] / "deals.parquet")
     deals["adate"] = pd.to_datetime(deals["adate"])
 
-    # Only keep deals that have both embeddings and labels
+    # Only keep deals that have ALL four embedding columns and labels,
+    # so every model is evaluated on the exact same set of deals.
+    all_cols = ["acquirer_item1", "target_item1", "acquirer_item7", "target_item7"]
     valid_deals = set(dealnums) & set(labels["dealnum"])
+    for col in all_cols:
+        if col in col_indices:
+            valid_deals &= set(col_indices[col].keys())
     deals = deals[deals["dealnum"].isin(valid_deals)].copy()
     n_in = len(deals)
-    print(f"Deals with embeddings + labels: {n_in}")
+    print(f"Deals with all embeddings + labels: {n_in}")
 
     if fit_cfg["split"] == "time":
         deals = deals.sort_values("adate")
@@ -122,8 +150,8 @@ def main():
         print(f"Input set: {input_set} ({cols})")
 
         # Build X, y for train and test
-        X_train, dn_train = _build_features(emb_data, dealnums, cols, train_deals)
-        X_test, dn_test = _build_features(emb_data, dealnums, cols, test_deals)
+        X_train, dn_train = _build_features(emb_data, col_indices, cols, train_deals)
+        X_test, dn_test = _build_features(emb_data, col_indices, cols, test_deals)
 
         if len(X_train) == 0 or len(X_test) == 0:
             print(f"  Skipping: insufficient data (train={len(X_train)}, test={len(X_test)})")
