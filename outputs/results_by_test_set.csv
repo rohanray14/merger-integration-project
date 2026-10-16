@@ -1,0 +1,13 @@
+model,test_set,auc,n_test,n_pos
+baseline_habit,test_A,0.7008333333333333,74,24
+mdna_concat,test_A,0.6991666666666667,74,24
+baseline_habit_intensity,test_A,0.6912499999999999,74,24
+both_concat,test_A,0.6458333333333333,74,24
+acquirer_item1_concat,test_A,0.6383333333333334,74,24
+baseline_same_industry,test_A,0.6241666666666668,74,24
+item1_concat,test_A,0.6224999999999999,74,24
+acquirer_only_concat,test_A,0.6191666666666666,74,24
+mdna_diff,test_A,0.5283333333333333,74,24
+mdna_cosine,test_A,0.5091666666666667,74,24
+item1_diff,test_A,0.5066666666666667,74,24
+item1_cosine,test_A,0.4875,74,24

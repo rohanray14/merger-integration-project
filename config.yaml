@@ -10,7 +10,9 @@ paths:
   cik_cusip_map: data/raw/cik-cusip-maps.csv             # CUSIP-6 to CIK crosswalk (fallback)
 
 sample:
-  announce_years: [2000, 2001, 2002, 2003, 2004]
+  announce_years: [2000, 2001, 2002, 2003, 2004, 2005, 2006, 2007]
+  train_years: [2000, 2001, 2002, 2003, 2004]
+  test_oos_years: [2005, 2006, 2007]
   status: C                  # completed deals only
   require_both_public: true
   form_types: ["10-K", "10-K405", "10-KSB", "10-KSB40"]
@@ -30,6 +32,7 @@ label:
 
 fit:
   test_share: 0.25
-  split: time                # "time" or "random"
+  split: two_test_sets       # "time", "random", or "two_test_sets"
   seed: 0
   input_sets: [item1, mdna, both, acquirer_only, acquirer_item1]
+  representations: [concat, cosine, diff]   # concat, cosine, diff

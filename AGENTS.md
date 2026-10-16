@@ -7,9 +7,13 @@ Rohan Ray with Prof. Gordon Phillips (Tuck) and Dr. Will (Huaizhou) Li.
 post-merger integration problems, measured with the Hoberg & Phillips (2018)
 page-17 keyword rule on the acquirer's post-merger 10-Ks.
 
-**Pilot sample:** completed SDC deals, both firms public US filers, announced
-2000-2004 (the first five ChronoBERT vintage years). 75/25 train/test split,
-by time if the sample allows.
+## Pilot 2 changes (this branch)
+
+- **Expanded sample:** 2000–2007 (was 2000–2004). Train on 2000–2004, OOS test on 2005–2007.
+- **Two test sets:** Test A = 25% random holdout from train years. Test B = matched-size random sample from 2005–2007.
+- **Three representations:** concat (original), cosine similarity, difference vector (acq − tgt).
+- **Second outcome measure:** Announcement returns (acquirer CARs) via `04b_build_returns.py`.
+- All-4-sections requirement kept for apples-to-apples comparison across models.
 
 ## Hard rules
 
@@ -38,9 +42,10 @@ to `outputs/sample_counts.csv`.
 | 2    | `02_link_filings.py`     | deals + gvkey-CIK link  | `data/interim/filings.parquet` (pre and post 10-Ks per deal)         |
 | 3    | `03_extract_sections.py` | filings                 | `data/interim/sections.parquet` (Item 1, Item 7, paragraphs)         |
 | 4    | `04_build_labels.py`     | post-merger 10-Ks       | `data/processed/labels.parquet` (dummy, intensity, pre-merger habit) |
+| 4b   | `04b_build_returns.py`   | deals + CRSP daily      | `data/processed/announcement_returns.parquet` (acquirer CARs)        |
 | 5    | `05_embed.py` (GPU)      | sections                | `data/processed/embeddings/`                                         |
-| 6    | `06_fit.py`              | embeddings + labels     | `outputs/models/`, predictions                                       |
-| 7    | `07_evaluate.py`         | predictions             | `outputs/` tables and figures                                        |
+| 6    | `06_fit.py`              | embeddings + labels     | `outputs/models/`, predictions (per representation × test set)       |
+| 7    | `07_evaluate.py`         | predictions             | `outputs/` tables and figures (per test set)                         |
 
 
 

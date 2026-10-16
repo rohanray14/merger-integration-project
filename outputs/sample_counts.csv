@@ -11,3 +11,5 @@ time,step,deals_in,deals_out,dropped,note
 2026-10-12T21:15:14,07_evaluate,159,159,0,models=7
 2026-10-13T14:50:43,06_fit,295,74,221,"input_sets=['item1', 'mdna', 'both', 'acquirer_only', 'acquirer_item1']"
 2026-10-13T14:50:49,07_evaluate,74,74,0,models=8
+2026-10-16T11:14:40,06_fit,295,74,221,"input_sets=['item1', 'mdna', 'both', 'acquirer_only', 'acquirer_item1'] reps=['concat', 'cosine', 'diff']"
+2026-10-16T11:14:59,07_evaluate,74,74,0,models=9 test_sets=1

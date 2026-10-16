@@ -1,4 +1,5 @@
-"""Step 6. Penalised logistic regression per input set, 75/25 split.
+"""Step 6. Penalised logistic regression per input set, with multiple
+representation types and two test sets.
 
 Input sets (from config.yaml):
   - item1:         acquirer_item1 + target_item1
@@ -6,6 +7,16 @@ Input sets (from config.yaml):
   - both:          all four embedding vectors
   - acquirer_only: acquirer_item1 + acquirer_item7
   - acquirer_item1: acquirer_item1 only
+
+Representations (from config.yaml):
+  - concat:  concatenate acquirer + target vectors (e.g. 1536 features)
+  - cosine:  cosine similarity between acquirer and target (1 feature)
+  - diff:    element-wise difference acq - tgt (e.g. 768 features)
+
+Split modes:
+  - two_test_sets: 75% random from train_years -> train,
+                   25% from train_years -> test_A,
+                   matched-size random from test_oos_years -> test_B
 
 Reads  : data/processed/embeddings/, data/processed/labels.parquet
 Writes : outputs/models/, outputs/predictions.parquet
@@ -16,11 +27,13 @@ import pandas as pd
 from sklearn.linear_model import LogisticRegressionCV
 from sklearn.preprocessing import StandardScaler
 from sklearn.pipeline import Pipeline
+from sklearn.metrics.pairwise import cosine_similarity as sk_cosine
 from integrability.config import load
 from integrability.counts import log_step
 
 
-# Map input_set name -> which embedding columns to concatenate
+# Map input_set name -> which embedding columns to use
+# For concat: these are concatenated. For cosine/diff: first half = acquirer, second = target.
 INPUT_COLS = {
     "item1": ["acquirer_item1", "target_item1"],
     "mdna": ["acquirer_item7", "target_item7"],
@@ -29,20 +42,21 @@ INPUT_COLS = {
     "acquirer_item1": ["acquirer_item1"],
 }
 
+# Which input sets support pair-level representations (cosine, diff)
+# Only sets with exactly one acquirer and one target column of the same section
+PAIR_COLS = {
+    "item1": ("acquirer_item1", "target_item1"),
+    "mdna": ("acquirer_item7", "target_item7"),
+}
+
 
 def _build_emb_indices(dealnums: np.ndarray, meta: pd.DataFrame) -> dict[str, dict]:
-    """Build per-column mapping from dealnum -> row index in the npz array.
-
-    The npz arrays are saved with dropna(), so each column has a different
-    length. The order matches the non-NaN rows in metadata, which shares
-    the same dealnum order as the dealnums array.
-    """
+    """Build per-column mapping from dealnum -> row index in the npz array."""
     col_map = {}
     for col in ["acquirer_item1", "target_item1", "acquirer_item7", "target_item7"]:
         n_col = f"{col}_n"
         if n_col not in meta.columns:
             continue
-        # Deals with a non-NaN count have an embedding, in order
         has = meta[n_col].notna()
         deal_to_idx = {}
         for arr_idx, (_, row) in enumerate(meta[has].iterrows()):
@@ -51,17 +65,18 @@ def _build_emb_indices(dealnums: np.ndarray, meta: pd.DataFrame) -> dict[str, di
     return col_map
 
 
-def _build_features(emb_data: dict, col_indices: dict[str, dict],
-                     cols: list[str], deal_set: set) -> tuple[np.ndarray, np.ndarray]:
-    """Build feature matrix X and corresponding dealnum array for deals in deal_set.
+def _get_embedding(emb_data, col_indices, col, dealnum):
+    """Get a single embedding vector for a deal and column."""
+    if col not in col_indices or dealnum not in col_indices[col]:
+        return None
+    return emb_data[col][col_indices[col][dealnum]]
 
-    Returns (X, filtered_dealnums). Deals missing any required column are dropped.
-    """
-    # Find deals that are in deal_set AND have all required columns
+
+def _build_features_concat(emb_data, col_indices, cols, deal_set):
+    """Concatenate embedding columns for deals in deal_set."""
     valid_deals = []
     rows = []
 
-    # Start with deals that have all columns
     candidates = deal_set.copy()
     for col in cols:
         if col not in col_indices:
@@ -71,21 +86,118 @@ def _build_features(emb_data: dict, col_indices: dict[str, dict],
     for dn in sorted(candidates):
         parts = []
         for col in cols:
-            arr_idx = col_indices[col][dn]
-            parts.append(emb_data[col][arr_idx])
+            parts.append(_get_embedding(emb_data, col_indices, col, dn))
         rows.append(np.concatenate(parts))
         valid_deals.append(dn)
 
     if not rows:
         return np.empty((0, 0)), np.array([])
-
     return np.stack(rows), np.array(valid_deals)
+
+
+def _build_features_cosine(emb_data, col_indices, acq_col, tgt_col, deal_set):
+    """Compute cosine similarity between acquirer and target vectors."""
+    valid_deals = []
+    rows = []
+
+    candidates = deal_set & set(col_indices.get(acq_col, {}).keys()) & set(col_indices.get(tgt_col, {}).keys())
+
+    for dn in sorted(candidates):
+        acq_vec = _get_embedding(emb_data, col_indices, acq_col, dn).reshape(1, -1)
+        tgt_vec = _get_embedding(emb_data, col_indices, tgt_col, dn).reshape(1, -1)
+        cos_sim = sk_cosine(acq_vec, tgt_vec)[0, 0]
+        rows.append([cos_sim])
+        valid_deals.append(dn)
+
+    if not rows:
+        return np.empty((0, 0)), np.array([])
+    return np.array(rows), np.array(valid_deals)
+
+
+def _build_features_diff(emb_data, col_indices, acq_col, tgt_col, deal_set):
+    """Compute element-wise difference (acquirer - target)."""
+    valid_deals = []
+    rows = []
+
+    candidates = deal_set & set(col_indices.get(acq_col, {}).keys()) & set(col_indices.get(tgt_col, {}).keys())
+
+    for dn in sorted(candidates):
+        acq_vec = _get_embedding(emb_data, col_indices, acq_col, dn)
+        tgt_vec = _get_embedding(emb_data, col_indices, tgt_col, dn)
+        rows.append(acq_vec - tgt_vec)
+        valid_deals.append(dn)
+
+    if not rows:
+        return np.empty((0, 0)), np.array([])
+    return np.stack(rows), np.array(valid_deals)
+
+
+def _build_features(emb_data, col_indices, input_set, representation, deal_set):
+    """Route to the appropriate feature builder."""
+    cols = INPUT_COLS[input_set]
+
+    if representation == "concat":
+        return _build_features_concat(emb_data, col_indices, cols, deal_set)
+
+    if representation in ("cosine", "diff"):
+        if input_set not in PAIR_COLS:
+            return np.empty((0, 0)), np.array([])
+        acq_col, tgt_col = PAIR_COLS[input_set]
+        if representation == "cosine":
+            return _build_features_cosine(emb_data, col_indices, acq_col, tgt_col, deal_set)
+        else:
+            return _build_features_diff(emb_data, col_indices, acq_col, tgt_col, deal_set)
+
+    raise ValueError(f"Unknown representation: {representation}")
+
+
+def _fit_and_predict(X_train, y_train, X_test, y_test, dn_test, label_map,
+                     input_set, representation, test_name, seed, model_dir):
+    """Fit model, predict, return list of prediction dicts."""
+    model_label = f"{input_set}_{representation}"
+
+    pipe = Pipeline([
+        ("scaler", StandardScaler()),
+        ("clf", LogisticRegressionCV(
+            Cs=10,
+            cv=5,
+            penalty="l2",
+            scoring="roc_auc",
+            max_iter=1000,
+            random_state=seed,
+        )),
+    ])
+    pipe.fit(X_train, y_train)
+
+    best_C = pipe.named_steps["clf"].C_[0]
+    prob_test = pipe.predict_proba(X_test)[:, 1]
+
+    print(f"    {test_name}: n={len(X_test)}, pos={y_test.sum()}, C={best_C:.4f}")
+
+    # Save model
+    model_path = model_dir / f"{model_label}.pkl"
+    with open(model_path, "wb") as f:
+        pickle.dump(pipe, f)
+
+    preds = []
+    for dn, prob in zip(dn_test, prob_test):
+        preds.append({
+            "dealnum": dn,
+            "input_set": input_set,
+            "representation": representation,
+            "model": model_label,
+            "test_set": test_name,
+            "y_true": label_map[dn],
+            "y_prob": prob,
+        })
+    return preds
 
 
 def main():
     cfg = load()
     paths = cfg["paths"]
     fit_cfg = cfg["fit"]
+    sample_cfg = cfg["sample"]
     seed = fit_cfg["seed"]
 
     # ── Load embeddings ─────────────────────────────────────────────────────
@@ -103,12 +215,12 @@ def main():
     label_map = dict(zip(labels["dealnum"], labels["hit"]))
     print(f"Labels: {len(labels)} deals, {labels['hit'].sum()} positive")
 
-    # ── Train/test split ────────────────────────────────────────────────────
+    # ── Load deals and build splits ─────────────────────────────────────────
     deals = pd.read_parquet(paths["interim"] / "deals.parquet")
     deals["adate"] = pd.to_datetime(deals["adate"])
+    deals["ayear_int"] = deals["ayear"].astype(float).astype(int)
 
-    # Only keep deals that have ALL four embedding columns and labels,
-    # so every model is evaluated on the exact same set of deals.
+    # Only keep deals that have ALL four embedding columns and labels
     all_cols = ["acquirer_item1", "target_item1", "acquirer_item7", "target_item7"]
     valid_deals = set(dealnums) & set(labels["dealnum"])
     for col in all_cols:
@@ -118,13 +230,44 @@ def main():
     n_in = len(deals)
     print(f"Deals with all embeddings + labels: {n_in}")
 
-    if fit_cfg["split"] == "time":
+    # ── Two test sets split ─────────────────────────────────────────────────
+    train_years = sample_cfg.get("train_years", sample_cfg["announce_years"])
+    oos_years = sample_cfg.get("test_oos_years", [])
+
+    if fit_cfg["split"] == "two_test_sets" and oos_years:
+        # In-sample deals (train_years)
+        in_sample = deals[deals["ayear_int"].isin(train_years)].copy()
+        oos_deals = deals[deals["ayear_int"].isin(oos_years)].copy()
+
+        # 75/25 random split on in-sample
+        rng = np.random.RandomState(seed)
+        shuffled = np.array(list(in_sample["dealnum"]))
+        rng.shuffle(shuffled)
+        split_idx = int(len(shuffled) * (1 - fit_cfg["test_share"]))
+        train_deals = set(shuffled[:split_idx])
+        test_a_deals = set(shuffled[split_idx:])
+
+        # Test B: random sample from OOS years, same size as test A
+        n_test_a = len(test_a_deals)
+        oos_dealnums = np.array(list(oos_deals["dealnum"]))
+        rng.shuffle(oos_dealnums)
+        test_b_deals = set(oos_dealnums[:n_test_a])
+
+        print(f"Train ({train_years}): {len(train_deals)}")
+        print(f"Test A (holdout from {train_years}): {len(test_a_deals)}")
+        print(f"Test B (OOS from {oos_years}): {len(test_b_deals)}")
+
+        test_sets = {"test_A": test_a_deals, "test_B": test_b_deals}
+
+    elif fit_cfg["split"] == "time":
         deals = deals.sort_values("adate")
         split_idx = int(len(deals) * (1 - fit_cfg["test_share"]))
         train_deals = set(deals.iloc[:split_idx]["dealnum"])
         test_deals = set(deals.iloc[split_idx:]["dealnum"])
         split_date = deals.iloc[split_idx]["adate"]
         print(f"Time split at {split_date}: {len(train_deals)} train, {len(test_deals)} test")
+        test_sets = {"test": test_deals}
+
     else:
         rng = np.random.RandomState(seed)
         shuffled = deals["dealnum"].values.copy()
@@ -133,70 +276,58 @@ def main():
         train_deals = set(shuffled[:split_idx])
         test_deals = set(shuffled[split_idx:])
         print(f"Random split: {len(train_deals)} train, {len(test_deals)} test")
+        test_sets = {"test": test_deals}
 
-    # ── Fit models per input set ────────────────────────────────────────────
+    # ── Fit models per input set × representation ─────────────────────────
     model_dir = paths["outputs"] / "models"
     model_dir.mkdir(parents=True, exist_ok=True)
 
+    representations = fit_cfg.get("representations", ["concat"])
     all_preds = []
 
     for input_set in fit_cfg["input_sets"]:
-        cols = INPUT_COLS.get(input_set)
-        if cols is None:
+        if input_set not in INPUT_COLS:
             print(f"WARNING: unknown input_set {input_set}, skipping")
             continue
 
-        print(f"\n{'='*50}")
-        print(f"Input set: {input_set} ({cols})")
+        for rep in representations:
+            # Skip pair-level representations for non-pair input sets
+            if rep in ("cosine", "diff") and input_set not in PAIR_COLS:
+                continue
 
-        # Build X, y for train and test
-        X_train, dn_train = _build_features(emb_data, col_indices, cols, train_deals)
-        X_test, dn_test = _build_features(emb_data, col_indices, cols, test_deals)
+            model_label = f"{input_set}_{rep}"
+            print(f"\n{'='*50}")
+            print(f"Input set: {input_set}, Representation: {rep}")
 
-        if len(X_train) == 0 or len(X_test) == 0:
-            print(f"  Skipping: insufficient data (train={len(X_train)}, test={len(X_test)})")
-            continue
+            # Build training features
+            X_train, dn_train = _build_features(
+                emb_data, col_indices, input_set, rep, train_deals
+            )
 
-        y_train = np.array([label_map[d] for d in dn_train])
-        y_test = np.array([label_map[d] for d in dn_test])
+            if len(X_train) == 0:
+                print(f"  Skipping: no training data")
+                continue
 
-        print(f"  Train: {len(X_train)} ({y_train.sum()} pos), Test: {len(X_test)} ({y_test.sum()} pos)")
-        print(f"  Feature dim: {X_train.shape[1]}")
+            y_train = np.array([label_map[d] for d in dn_train])
+            print(f"  Train: {len(X_train)} ({y_train.sum()} pos), Features: {X_train.shape[1]}")
 
-        # Fit penalised logistic regression with cross-validation
-        pipe = Pipeline([
-            ("scaler", StandardScaler()),
-            ("clf", LogisticRegressionCV(
-                Cs=10,
-                cv=5,
-                penalty="l2",
-                scoring="roc_auc",
-                max_iter=1000,
-                random_state=seed,
-            )),
-        ])
-        pipe.fit(X_train, y_train)
+            # Fit and predict on each test set
+            for test_name, test_deal_set in test_sets.items():
+                X_test, dn_test = _build_features(
+                    emb_data, col_indices, input_set, rep, test_deal_set
+                )
 
-        best_C = pipe.named_steps["clf"].C_[0]
-        print(f"  Best C: {best_C:.4f}")
+                if len(X_test) == 0:
+                    print(f"    {test_name}: Skipping (no data)")
+                    continue
 
-        # Predictions
-        prob_train = pipe.predict_proba(X_train)[:, 1]
-        prob_test = pipe.predict_proba(X_test)[:, 1]
+                y_test = np.array([label_map[d] for d in dn_test])
 
-        for dn, prob in zip(dn_test, prob_test):
-            all_preds.append({
-                "dealnum": dn,
-                "input_set": input_set,
-                "y_true": label_map[dn],
-                "y_prob": prob,
-            })
-
-        # Save model
-        model_path = model_dir / f"{input_set}.pkl"
-        with open(model_path, "wb") as f:
-            pickle.dump(pipe, f)
-        print(f"  Saved -> {model_path}")
+                preds = _fit_and_predict(
+                    X_train, y_train, X_test, y_test, dn_test, label_map,
+                    input_set, rep, test_name, seed, model_dir
+                )
+                all_preds.extend(preds)
 
     # ── Save predictions ────────────────────────────────────────────────────
     preds_df = pd.DataFrame(all_preds)
@@ -205,7 +336,7 @@ def main():
 
     n_out = preds_df["dealnum"].nunique() if len(preds_df) else 0
     log_step("06_fit", n_in, n_out,
-             f"input_sets={fit_cfg['input_sets']}")
+             f"input_sets={fit_cfg['input_sets']} reps={representations}")
 
     print(f"\nSaved {len(preds_df)} predictions -> {preds_path}")
 
