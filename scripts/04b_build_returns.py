@@ -3,11 +3,11 @@
 Computes acquirer cumulative abnormal returns around the deal announcement
 date using CRSP daily returns and the market model.
 
-Requires: CRSP daily returns file in data/raw/crsp_daily.csv
-          (columns: PERMNO, date, RET, VWRETD or similar)
-          + a PERMNO-CIK or PERMNO-GVKEY link
+Requires: data/raw/crsp_daily.csv           (CRSP daily stock file)
+          data/raw/crsp_market_index.csv     (CRSP daily market index, vwretd)
+          data/raw/permno_cusip_link.csv     (PERMNO-CUSIP6 link from CRSP dsenames)
 
-Reads  : data/interim/deals.parquet, data/raw/crsp_daily.csv
+Reads  : data/interim/deals.parquet
 Writes : data/processed/announcement_returns.parquet
 """
 import pandas as pd
@@ -44,6 +44,25 @@ def _estimate_market_model(ret_df, est_start, est_end):
         return None, None
 
 
+def _build_acq_permno_map(cfg, deals):
+    """Map dealnum -> acquirer PERMNO via acquirer CUSIP-6 + CRSP dsenames link."""
+    paths = cfg["paths"]
+
+    # Load PERMNO-CUSIP6 link
+    link = pd.read_csv(paths["raw"] / "permno_cusip_link.csv")
+    link["cusip6"] = link["cusip6"].astype(str).str.strip()
+    link["permno"] = link["permno"].astype(int)
+
+    # CUSIP6 can map to multiple PERMNOs; take the first (most common share class)
+    cusip_to_permno = link.drop_duplicates(subset=["cusip6"]).set_index("cusip6")["permno"].to_dict()
+
+    # Map acquirer CUSIP-6 to PERMNO
+    deals = deals.copy()
+    deals["acq_permno"] = deals["acusip6"].astype(str).str.strip().map(cusip_to_permno)
+
+    return deals
+
+
 def main():
     cfg = load()
     paths = cfg["paths"]
@@ -51,82 +70,35 @@ def main():
     # ── Load deals ────────────────────────────────────────────────────────────
     deals = pd.read_parquet(paths["interim"] / "deals.parquet")
     deals["adate"] = pd.to_datetime(deals["adate"])
+    deals["dealnum"] = deals["dealnum"].astype(float)
     n_in = len(deals)
     print(f"Loaded {n_in} deals")
 
     # ── Load CRSP daily returns ───────────────────────────────────────────────
-    crsp_path = paths["raw"] / "crsp_daily.csv"
-    if not crsp_path.exists():
-        print(f"ERROR: CRSP daily returns file not found at {crsp_path}")
-        print("Please download from WRDS and place at this path.")
-        print("Required columns: PERMNO, date, RET, VWRETD (or sprtrn)")
-        print("\nCreating placeholder output with no data...")
-
-        # Save empty placeholder so downstream scripts don't break
-        placeholder = pd.DataFrame(columns=[
-            "dealnum", "car_3day", "car_5day", "car_11day",
-            "alpha", "beta", "n_est_days",
-        ])
-        out = paths["processed"] / "announcement_returns.parquet"
-        out.parent.mkdir(parents=True, exist_ok=True)
-        placeholder.to_parquet(out, index=False)
-        log_step("04b_build_returns", n_in, 0, "no CRSP data")
-        return
-
-    crsp = pd.read_csv(crsp_path, parse_dates=["date"])
-    # Normalize column names
+    crsp = pd.read_csv(paths["raw"] / "crsp_daily.csv", parse_dates=["date"])
     crsp.columns = crsp.columns.str.lower()
-    if "vwretd" in crsp.columns:
-        crsp = crsp.rename(columns={"vwretd": "mkt_ret"})
-    elif "sprtrn" in crsp.columns:
-        crsp = crsp.rename(columns={"sprtrn": "mkt_ret"})
-
     crsp["ret"] = pd.to_numeric(crsp["ret"], errors="coerce")
-    crsp["mkt_ret"] = pd.to_numeric(crsp["mkt_ret"], errors="coerce")
-    print(f"CRSP daily returns: {len(crsp)} rows, {crsp['permno'].nunique()} PERMNOs")
+    print(f"CRSP daily returns: {len(crsp):,} rows, {crsp['permno'].nunique():,} PERMNOs")
 
-    # ── Need PERMNO-CIK link (or PERMNO-GVKEY) ───────────────────────────────
-    # Try loading a link file
-    link_path = paths["raw"] / "permno_cik_link.csv"
-    if not link_path.exists():
-        link_path = paths["raw"] / "permno_gvkey_link.csv"
+    # ── Load market index (separate file) ─────────────────────────────────────
+    mkt = pd.read_csv(paths["raw"] / "crsp_market_index.csv", parse_dates=["date"])
+    mkt.columns = mkt.columns.str.lower()
+    mkt["vwretd"] = pd.to_numeric(mkt["vwretd"], errors="coerce")
+    mkt = mkt.rename(columns={"vwretd": "mkt_ret"})
 
-    if link_path.exists():
-        link = pd.read_csv(link_path)
-        link.columns = link.columns.str.lower()
-        print(f"Loaded PERMNO link: {len(link)} rows")
-    else:
-        print(f"WARNING: No PERMNO link file found. Cannot compute CARs.")
-        print("  Expected: data/raw/permno_cik_link.csv or permno_gvkey_link.csv")
-        placeholder = pd.DataFrame(columns=[
-            "dealnum", "car_3day", "car_5day", "car_11day",
-            "alpha", "beta", "n_est_days",
-        ])
-        out = paths["processed"] / "announcement_returns.parquet"
-        out.parent.mkdir(parents=True, exist_ok=True)
-        placeholder.to_parquet(out, index=False)
-        log_step("04b_build_returns", n_in, 0, "no PERMNO link")
-        return
+    # Merge market return onto CRSP daily
+    crsp = crsp.merge(mkt[["date", "mkt_ret"]], on="date", how="left")
+    print(f"After merging market index: {crsp['mkt_ret'].notna().sum():,} rows with mkt_ret")
 
-    # ── Map deals to PERMNOs ──────────────────────────────────────────────────
-    # This depends on your link file format — adjust as needed
-    if "cik" in link.columns and "permno" in link.columns:
-        cik_to_permno = dict(zip(link["cik"].astype(str), link["permno"]))
-        deals["acq_permno"] = deals["acq_cik"].astype(str).map(cik_to_permno)
-    elif "gvkey" in link.columns and "permno" in link.columns:
-        gvkey_to_permno = dict(zip(link["gvkey"].astype(str), link["permno"]))
-        if "acq_gvkey" in deals.columns:
-            deals["acq_permno"] = deals["acq_gvkey"].astype(str).map(gvkey_to_permno)
-        else:
-            print("WARNING: Cannot map GVKEY to PERMNO — no acq_gvkey column")
-            deals["acq_permno"] = np.nan
+    # ── Map deals to acquirer PERMNOs ─────────────────────────────────────────
+    deals = _build_acq_permno_map(cfg, deals)
 
     has_permno = deals["acq_permno"].notna()
     print(f"Deals with acquirer PERMNO: {has_permno.sum()}/{n_in}")
 
     # ── Compute CARs ─────────────────────────────────────────────────────────
     results = []
-    trading_dates = sorted(crsp["date"].unique())
+    crsp_grouped = crsp.groupby("permno")
 
     for _, deal in deals[has_permno].iterrows():
         permno = int(deal["acq_permno"])
@@ -134,21 +106,16 @@ def main():
         dealnum = deal["dealnum"]
 
         # Get this firm's returns
-        firm_ret = crsp[crsp["permno"] == permno].sort_values("date").copy()
+        if permno not in crsp_grouped.groups:
+            continue
+        firm_ret = crsp_grouped.get_group(permno).sort_values("date").copy()
+        firm_ret = firm_ret.dropna(subset=["ret", "mkt_ret"])
         if len(firm_ret) == 0:
             continue
 
-        # Find the announcement date in trading dates
-        firm_ret["rel_day"] = np.searchsorted(
-            firm_ret["date"].values, adate
-        ) - np.arange(len(firm_ret))
-        # Simpler: compute relative trading days from announcement
+        # Compute relative trading days from announcement
         firm_dates = firm_ret["date"].values
-        try:
-            event_idx = np.searchsorted(firm_dates, np.datetime64(adate))
-        except:
-            continue
-
+        event_idx = np.searchsorted(firm_dates, np.datetime64(adate))
         firm_ret["rel_day"] = np.arange(len(firm_ret)) - event_idx
 
         # Estimate market model
@@ -194,8 +161,10 @@ def main():
     print(f"\nComputed CARs for {n_out} deals")
 
     if n_out > 0:
-        print(f"  CAR [-1,+1] mean: {returns_df['car_3day'].mean():.4f}")
+        print(f"  CAR [-1,+1] mean:   {returns_df['car_3day'].mean():.4f}")
         print(f"  CAR [-1,+1] median: {returns_df['car_3day'].median():.4f}")
+        print(f"  CAR [-2,+2] mean:   {returns_df['car_5day'].mean():.4f}")
+        print(f"  CAR [-5,+5] mean:   {returns_df['car_11day'].mean():.4f}")
 
     # ── Save ──────────────────────────────────────────────────────────────────
     out = paths["processed"] / "announcement_returns.parquet"

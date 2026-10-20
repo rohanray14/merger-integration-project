@@ -11,3 +11,15 @@ mdna_diff,test_A,0.5283333333333333,74,24
 mdna_cosine,test_A,0.5091666666666667,74,24
 item1_diff,test_A,0.5066666666666667,74,24
 item1_cosine,test_A,0.4875,74,24
+baseline_habit,test_B,0.6453125,74,10
+baseline_habit_intensity,test_B,0.6390625,74,10
+acquirer_item1_concat,test_B,0.6328125,74,10
+mdna_cosine,test_B,0.5671875,74,10
+acquirer_only_concat,test_B,0.55625,74,10
+both_concat,test_B,0.528125,74,10
+baseline_same_industry,test_B,0.5265625,74,10
+item1_diff,test_B,0.5234375,74,10
+item1_concat,test_B,0.5125,74,10
+mdna_concat,test_B,0.4671875,74,10
+mdna_diff,test_B,0.40937499999999993,74,10
+item1_cosine,test_B,0.36093749999999997,74,10

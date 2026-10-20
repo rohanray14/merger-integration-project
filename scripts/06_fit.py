@@ -1,5 +1,5 @@
-"""Step 6. Penalised logistic regression per input set, with multiple
-representation types and two test sets.
+"""Step 6. Penalised logistic/ridge regression per input set, with multiple
+representation types, two test sets, and two outcomes (keyword label + CARs).
 
 Input sets (from config.yaml):
   - item1:         acquirer_item1 + target_item1
@@ -18,13 +18,15 @@ Split modes:
                    25% from train_years -> test_A,
                    matched-size random from test_oos_years -> test_B
 
-Reads  : data/processed/embeddings/, data/processed/labels.parquet
-Writes : outputs/models/, outputs/predictions.parquet
+Reads  : data/processed/embeddings/, data/processed/labels.parquet,
+         data/processed/announcement_returns.parquet
+Writes : outputs/models/, outputs/predictions.parquet,
+         outputs/predictions_cars.parquet
 """
 import pickle
 import numpy as np
 import pandas as pd
-from sklearn.linear_model import LogisticRegressionCV
+from sklearn.linear_model import LogisticRegressionCV, RidgeCV
 from sklearn.preprocessing import StandardScaler
 from sklearn.pipeline import Pipeline
 from sklearn.metrics.pairwise import cosine_similarity as sk_cosine
@@ -153,7 +155,7 @@ def _build_features(emb_data, col_indices, input_set, representation, deal_set):
 
 def _fit_and_predict(X_train, y_train, X_test, y_test, dn_test, label_map,
                      input_set, representation, test_name, seed, model_dir):
-    """Fit model, predict, return list of prediction dicts."""
+    """Fit logistic model, predict, return list of prediction dicts."""
     model_label = f"{input_set}_{representation}"
 
     pipe = Pipeline([
@@ -189,6 +191,42 @@ def _fit_and_predict(X_train, y_train, X_test, y_test, dn_test, label_map,
             "test_set": test_name,
             "y_true": label_map[dn],
             "y_prob": prob,
+        })
+    return preds
+
+
+def _fit_and_predict_regression(X_train, y_train, X_test, y_test, dn_test,
+                                label_map, input_set, representation,
+                                test_name, seed, model_dir):
+    """Fit ridge regression for continuous outcome (CARs)."""
+    model_label = f"{input_set}_{representation}"
+
+    pipe = Pipeline([
+        ("scaler", StandardScaler()),
+        ("ridge", RidgeCV(alphas=np.logspace(-3, 3, 20), cv=5)),
+    ])
+    pipe.fit(X_train, y_train)
+
+    best_alpha = pipe.named_steps["ridge"].alpha_
+    y_pred = pipe.predict(X_test)
+
+    print(f"    {test_name}: n={len(X_test)}, alpha={best_alpha:.4f}")
+
+    # Save model
+    model_path = model_dir / f"{model_label}_cars.pkl"
+    with open(model_path, "wb") as f:
+        pickle.dump(pipe, f)
+
+    preds = []
+    for dn, yp in zip(dn_test, y_pred):
+        preds.append({
+            "dealnum": dn,
+            "input_set": input_set,
+            "representation": representation,
+            "model": model_label,
+            "test_set": test_name,
+            "y_true": label_map[dn],
+            "y_pred": yp,
         })
     return preds
 
@@ -329,16 +367,79 @@ def main():
                 )
                 all_preds.extend(preds)
 
-    # ── Save predictions ────────────────────────────────────────────────────
+    # ── Save keyword predictions ─────────────────────────────────────────────
     preds_df = pd.DataFrame(all_preds)
     preds_path = paths["outputs"] / "predictions.parquet"
     preds_df.to_parquet(preds_path, index=False)
+    print(f"\nSaved {len(preds_df)} keyword predictions -> {preds_path}")
+
+    # ── CARs outcome (ridge regression) ──────────────────────────────────────
+    cars_path = paths["processed"] / "announcement_returns.parquet"
+    if cars_path.exists():
+        cars = pd.read_parquet(cars_path)
+        if len(cars) > 0:
+            car_col = "car_3day"
+            # Normalize dealnum types to match embeddings/labels (str)
+            cars["dealnum"] = cars["dealnum"].astype(float).astype(str)
+            cars = cars.dropna(subset=[car_col])
+            cars_map = dict(zip(cars["dealnum"], cars[car_col]))
+            cars_valid = valid_deals & set(cars["dealnum"])
+            print(f"\n{'#'*60}")
+            print(f"CARs outcome: {len(cars_valid)} deals with embeddings + CARs")
+
+            all_car_preds = []
+            for input_set in fit_cfg["input_sets"]:
+                if input_set not in INPUT_COLS:
+                    continue
+                for rep in representations:
+                    if rep in ("cosine", "diff") and input_set not in PAIR_COLS:
+                        continue
+
+                    print(f"\n{'='*50}")
+                    print(f"CARs | Input set: {input_set}, Representation: {rep}")
+
+                    X_train, dn_train = _build_features(
+                        emb_data, col_indices, input_set, rep,
+                        train_deals & cars_valid
+                    )
+                    if len(X_train) == 0:
+                        print(f"  Skipping: no training data")
+                        continue
+
+                    y_train = np.array([cars_map[d] for d in dn_train])
+                    print(f"  Train: {len(X_train)}, Features: {X_train.shape[1]}")
+
+                    for test_name, test_deal_set in test_sets.items():
+                        X_test, dn_test = _build_features(
+                            emb_data, col_indices, input_set, rep,
+                            test_deal_set & cars_valid
+                        )
+                        if len(X_test) == 0:
+                            print(f"    {test_name}: Skipping (no data)")
+                            continue
+
+                        y_test = np.array([cars_map[d] for d in dn_test])
+
+                        preds = _fit_and_predict_regression(
+                            X_train, y_train, X_test, y_test, dn_test,
+                            cars_map, input_set, rep, test_name, seed,
+                            model_dir
+                        )
+                        all_car_preds.extend(preds)
+
+            if all_car_preds:
+                car_preds_df = pd.DataFrame(all_car_preds)
+                car_preds_path = paths["outputs"] / "predictions_cars.parquet"
+                car_preds_df.to_parquet(car_preds_path, index=False)
+                print(f"\nSaved {len(car_preds_df)} CAR predictions -> {car_preds_path}")
+        else:
+            print("\nSkipping CARs: empty announcement_returns.parquet")
+    else:
+        print("\nSkipping CARs: announcement_returns.parquet not found")
 
     n_out = preds_df["dealnum"].nunique() if len(preds_df) else 0
     log_step("06_fit", n_in, n_out,
              f"input_sets={fit_cfg['input_sets']} reps={representations}")
-
-    print(f"\nSaved {len(preds_df)} predictions -> {preds_path}")
 
 
 if __name__ == "__main__":

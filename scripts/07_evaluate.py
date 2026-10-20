@@ -8,17 +8,18 @@ Baselines:
   - Habit + intensity: pre-merger habit dummy + intensity
   - Same industry: same 2-digit SIC dummy
 
-Reads  : outputs/predictions.parquet, data/processed/labels.parquet,
-         data/interim/deals.parquet
+Reads  : outputs/predictions.parquet, outputs/predictions_cars.parquet,
+         data/processed/labels.parquet, data/interim/deals.parquet
 Writes : outputs/results_table.csv, outputs/roc_curves.png,
-         outputs/results_by_test_set.csv
+         outputs/results_by_test_set.csv, outputs/results_cars.csv
 """
 import numpy as np
 import pandas as pd
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
-from sklearn.metrics import roc_auc_score, roc_curve
+from sklearn.metrics import roc_auc_score, roc_curve, r2_score
+from scipy.stats import pearsonr, spearmanr
 from integrability.config import load
 from integrability.counts import log_step
 
@@ -161,6 +162,71 @@ def main():
         fig.savefig(fig_path, dpi=150, bbox_inches="tight")
         plt.close(fig)
         print(f"ROC curves ({test_name}) -> {fig_path}")
+
+    # ── CARs evaluation ─────────────────────────────────────────────────────
+    car_preds_path = out_dir / "predictions_cars.parquet"
+    if car_preds_path.exists():
+        car_preds = pd.read_parquet(car_preds_path)
+        car_test_sets = sorted(car_preds["test_set"].unique())
+        car_model_names = sorted(car_preds["model"].unique())
+        print(f"\n{'#'*60}")
+        print(f"CARs predictions: {len(car_preds)} rows")
+        print(f"  Models: {car_model_names}")
+        print(f"  Test sets: {car_test_sets}")
+
+        car_results = []
+        for test_name in car_test_sets:
+            test_cp = car_preds[car_preds["test_set"] == test_name]
+
+            for model_name, grp in test_cp.groupby("model"):
+                y_true = grp["y_true"].values
+                y_pred = grp["y_pred"].values
+                n = len(grp)
+
+                r2 = r2_score(y_true, y_pred) if n > 1 else float("nan")
+                corr, p_val = pearsonr(y_true, y_pred) if n > 2 else (float("nan"), float("nan"))
+                rank_corr, rank_p = spearmanr(y_true, y_pred) if n > 2 else (float("nan"), float("nan"))
+
+                car_results.append({
+                    "model": model_name,
+                    "test_set": test_name,
+                    "r2": r2,
+                    "pearson_r": corr,
+                    "pearson_p": p_val,
+                    "spearman_r": rank_corr,
+                    "spearman_p": rank_p,
+                    "n_test": n,
+                })
+                print(f"  {model_name} [{test_name}]: R²={r2:.3f}, r={corr:.3f} (p={p_val:.3f}), n={n}")
+
+        car_results_df = pd.DataFrame(car_results)
+        car_results_df = car_results_df.sort_values(["test_set", "r2"], ascending=[True, False])
+        car_path = out_dir / "results_cars.csv"
+        car_results_df.to_csv(car_path, index=False)
+        print(f"\nCARs results -> {car_path}")
+
+        # Scatter plots (one per test set)
+        for test_name in car_test_sets:
+            test_cp = car_preds[car_preds["test_set"] == test_name]
+            n_models = test_cp["model"].nunique()
+            fig, axes = plt.subplots(1, min(n_models, 4), figsize=(5 * min(n_models, 4), 4),
+                                     squeeze=False)
+            for idx, (model_name, grp) in enumerate(test_cp.groupby("model")):
+                if idx >= 4:
+                    break
+                ax = axes[0, idx]
+                ax.scatter(grp["y_true"], grp["y_pred"], alpha=0.5, s=20)
+                ax.set_xlabel("Actual CAR")
+                ax.set_ylabel("Predicted CAR")
+                corr = pearsonr(grp["y_true"], grp["y_pred"])[0]
+                ax.set_title(f"{model_name}\nr={corr:.3f}", fontsize=9)
+
+            fig.suptitle(f"CAR Predictions: {test_name}", fontsize=11)
+            fig.tight_layout()
+            fig_path = out_dir / f"cars_scatter_{test_name}.png"
+            fig.savefig(fig_path, dpi=150, bbox_inches="tight")
+            plt.close(fig)
+            print(f"CAR scatter ({test_name}) -> {fig_path}")
 
     n_in = preds["dealnum"].nunique()
     log_step("07_evaluate", n_in, n_in, f"models={len(model_names)} test_sets={len(test_set_names)}")

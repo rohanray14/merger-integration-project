@@ -13,3 +13,14 @@ time,step,deals_in,deals_out,dropped,note
 2026-10-13T14:50:49,07_evaluate,74,74,0,models=8
 2026-10-16T11:14:40,06_fit,295,74,221,"input_sets=['item1', 'mdna', 'both', 'acquirer_only', 'acquirer_item1'] reps=['concat', 'cosine', 'diff']"
 2026-10-16T11:14:59,07_evaluate,74,74,0,models=9 test_sets=1
+2026-10-16T21:09:35,01_select_deals,162985,1338,161647,"status=C years=[2000, 2001, 2002, 2003, 2004, 2005, 2006, 2007] both_US both_CIK"
+2026-10-16T21:28:26,02_link_filings,1338,1032,306,pre_acq=1238 pre_tgt=1248 post=1157
+2026-10-16T22:18:19,03_extract_sections,1331,947,384,paragraphs=812895
+2026-10-16T22:28:15,04_build_labels,1323,1082,241,dummy_rate=0.228
+2026-10-19T17:03:42,04b_build_returns,1338,1022,316,car_deals=1022
+2026-10-19T19:47:02,06_fit,485,148,337,"input_sets=['item1', 'mdna', 'both', 'acquirer_only', 'acquirer_item1'] reps=['concat', 'cosine', 'diff']"
+2026-10-19T19:47:07,07_evaluate,148,148,0,models=9 test_sets=2
+2026-10-19T20:10:21,04b_build_returns,1338,1234,104,car_deals=1234
+2026-10-19T20:12:34,06_fit,485,148,337,"input_sets=['item1', 'mdna', 'both', 'acquirer_only', 'acquirer_item1'] reps=['concat', 'cosine', 'diff']"
+2026-10-19T20:13:16,06_fit,485,148,337,"input_sets=['item1', 'mdna', 'both', 'acquirer_only', 'acquirer_item1'] reps=['concat', 'cosine', 'diff']"
+2026-10-19T20:13:28,07_evaluate,148,148,0,models=9 test_sets=2
