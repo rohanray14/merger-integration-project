@@ -24,3 +24,6 @@ time,step,deals_in,deals_out,dropped,note
 2026-10-19T20:12:34,06_fit,485,148,337,"input_sets=['item1', 'mdna', 'both', 'acquirer_only', 'acquirer_item1'] reps=['concat', 'cosine', 'diff']"
 2026-10-19T20:13:16,06_fit,485,148,337,"input_sets=['item1', 'mdna', 'both', 'acquirer_only', 'acquirer_item1'] reps=['concat', 'cosine', 'diff']"
 2026-10-19T20:13:28,07_evaluate,148,148,0,models=9 test_sets=2
+2026-10-22T22:33:18,02a_link_gvkey_cik,162985,63913,99072,acq=91231 tgt=80395 both=63913
+2026-10-22T22:33:24,01_select_deals,162985,1731,161254,"status=C years=[2000, 2001, 2002, 2003, 2004, 2005, 2006, 2007] both_US both_CIK"
+2026-10-22T23:01:22,02_link_filings,1731,1270,461,pre_acq=1552 pre_tgt=1553 post=1476
