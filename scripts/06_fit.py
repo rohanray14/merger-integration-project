@@ -26,6 +26,7 @@ Writes : outputs/models/, outputs/predictions.parquet,
 import pickle
 import numpy as np
 import pandas as pd
+from sklearn.decomposition import PCA
 from sklearn.linear_model import LogisticRegressionCV, RidgeCV
 from sklearn.preprocessing import StandardScaler
 from sklearn.pipeline import Pipeline
@@ -154,27 +155,31 @@ def _build_features(emb_data, col_indices, input_set, representation, deal_set):
 
 
 def _fit_and_predict(X_train, y_train, X_test, y_test, dn_test, label_map,
-                     input_set, representation, test_name, seed, model_dir):
+                     input_set, representation, test_name, seed, model_dir,
+                     pca_components=50):
     """Fit logistic model, predict, return list of prediction dicts."""
     model_label = f"{input_set}_{representation}"
 
-    pipe = Pipeline([
-        ("scaler", StandardScaler()),
-        ("clf", LogisticRegressionCV(
-            Cs=10,
-            cv=5,
-            penalty="l2",
-            scoring="roc_auc",
-            max_iter=1000,
-            random_state=seed,
-        )),
-    ])
+    steps = [("scaler", StandardScaler())]
+    if X_train.shape[1] > pca_components:
+        n_comp = min(pca_components, X_train.shape[0] - 1)
+        steps.append(("pca", PCA(n_components=n_comp, random_state=seed)))
+    steps.append(("clf", LogisticRegressionCV(
+        Cs=10,
+        cv=5,
+        penalty="l2",
+        scoring="roc_auc",
+        max_iter=1000,
+        random_state=seed,
+    )))
+    pipe = Pipeline(steps)
     pipe.fit(X_train, y_train)
 
     best_C = pipe.named_steps["clf"].C_[0]
     prob_test = pipe.predict_proba(X_test)[:, 1]
+    pca_info = f", PCA={n_comp}" if "pca" in pipe.named_steps else ""
 
-    print(f"    {test_name}: n={len(X_test)}, pos={y_test.sum()}, C={best_C:.4f}")
+    print(f"    {test_name}: n={len(X_test)}, pos={y_test.sum()}, C={best_C:.4f}{pca_info}")
 
     # Save model
     model_path = model_dir / f"{model_label}.pkl"
@@ -197,20 +202,23 @@ def _fit_and_predict(X_train, y_train, X_test, y_test, dn_test, label_map,
 
 def _fit_and_predict_regression(X_train, y_train, X_test, y_test, dn_test,
                                 label_map, input_set, representation,
-                                test_name, seed, model_dir):
+                                test_name, seed, model_dir, pca_components=50):
     """Fit ridge regression for continuous outcome (CARs)."""
     model_label = f"{input_set}_{representation}"
 
-    pipe = Pipeline([
-        ("scaler", StandardScaler()),
-        ("ridge", RidgeCV(alphas=np.logspace(-3, 3, 20), cv=5)),
-    ])
+    steps = [("scaler", StandardScaler())]
+    if X_train.shape[1] > pca_components:
+        n_comp = min(pca_components, X_train.shape[0] - 1)
+        steps.append(("pca", PCA(n_components=n_comp, random_state=seed)))
+    steps.append(("ridge", RidgeCV(alphas=np.logspace(-3, 3, 20), cv=5)))
+    pipe = Pipeline(steps)
     pipe.fit(X_train, y_train)
 
     best_alpha = pipe.named_steps["ridge"].alpha_
     y_pred = pipe.predict(X_test)
+    pca_info = f", PCA={n_comp}" if "pca" in pipe.named_steps else ""
 
-    print(f"    {test_name}: n={len(X_test)}, alpha={best_alpha:.4f}")
+    print(f"    {test_name}: n={len(X_test)}, alpha={best_alpha:.4f}{pca_info}")
 
     # Save model
     model_path = model_dir / f"{model_label}_cars.pkl"
@@ -321,6 +329,7 @@ def main():
     model_dir.mkdir(parents=True, exist_ok=True)
 
     representations = fit_cfg.get("representations", ["concat"])
+    pca_components = fit_cfg.get("pca_components", 50)
     all_preds = []
 
     for input_set in fit_cfg["input_sets"]:
@@ -363,7 +372,7 @@ def main():
 
                 preds = _fit_and_predict(
                     X_train, y_train, X_test, y_test, dn_test, label_map,
-                    input_set, rep, test_name, seed, model_dir
+                    input_set, rep, test_name, seed, model_dir, pca_components
                 )
                 all_preds.extend(preds)
 
@@ -423,7 +432,7 @@ def main():
                         preds = _fit_and_predict_regression(
                             X_train, y_train, X_test, y_test, dn_test,
                             cars_map, input_set, rep, test_name, seed,
-                            model_dir
+                            model_dir, pca_components
                         )
                         all_car_preds.extend(preds)
 

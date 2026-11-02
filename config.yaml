@@ -36,3 +36,4 @@ fit:
   seed: 0
   input_sets: [item1, mdna, both, acquirer_only, acquirer_item1]
   representations: [concat, cosine, diff]   # concat, cosine, diff
+  pca_components: 50                         # PCA reduction when features > this
