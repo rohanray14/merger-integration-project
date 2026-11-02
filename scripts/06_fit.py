@@ -1,5 +1,4 @@
-"""Step 6. Penalised logistic/ridge regression per input set, with multiple
-representation types, two test sets, and two outcomes (keyword label + CARs).
+"""Step 6. Penalised logistic regression per input set × representation.
 
 Input sets (from config.yaml):
   - item1:         acquirer_item1 + target_item1
@@ -9,25 +8,27 @@ Input sets (from config.yaml):
   - acquirer_item1: acquirer_item1 only
 
 Representations (from config.yaml):
-  - concat:  concatenate acquirer + target vectors (e.g. 1536 features)
-  - cosine:  cosine similarity between acquirer and target (1 feature)
-  - diff:    element-wise difference acq - tgt (e.g. 768 features)
+  - concat:    concatenate acquirer + target vectors (e.g. 1536 features)
+  - abs_diff:  element-wise |acquirer - target| (e.g. 768 features)
+  - product:   element-wise acquirer * target (e.g. 768 features)
 
 Split modes:
   - two_test_sets: 75% random from train_years -> train,
                    25% from train_years -> test_A,
                    matched-size random from test_oos_years -> test_B
 
-Reads  : data/processed/embeddings/, data/processed/labels.parquet,
-         data/processed/announcement_returns.parquet
+Also computes per-deal cosine similarity (acquirer vs target) for use
+in the CARs regression in step 7.
+
+Reads  : data/processed/embeddings/, data/processed/labels.parquet
 Writes : outputs/models/, outputs/predictions.parquet,
-         outputs/predictions_cars.parquet
+         outputs/cosine_similarities.parquet
 """
 import pickle
 import numpy as np
 import pandas as pd
 from sklearn.decomposition import PCA
-from sklearn.linear_model import LogisticRegressionCV, RidgeCV
+from sklearn.linear_model import LogisticRegressionCV
 from sklearn.preprocessing import StandardScaler
 from sklearn.pipeline import Pipeline
 from sklearn.metrics.pairwise import cosine_similarity as sk_cosine
@@ -98,27 +99,8 @@ def _build_features_concat(emb_data, col_indices, cols, deal_set):
     return np.stack(rows), np.array(valid_deals)
 
 
-def _build_features_cosine(emb_data, col_indices, acq_col, tgt_col, deal_set):
-    """Compute cosine similarity between acquirer and target vectors."""
-    valid_deals = []
-    rows = []
-
-    candidates = deal_set & set(col_indices.get(acq_col, {}).keys()) & set(col_indices.get(tgt_col, {}).keys())
-
-    for dn in sorted(candidates):
-        acq_vec = _get_embedding(emb_data, col_indices, acq_col, dn).reshape(1, -1)
-        tgt_vec = _get_embedding(emb_data, col_indices, tgt_col, dn).reshape(1, -1)
-        cos_sim = sk_cosine(acq_vec, tgt_vec)[0, 0]
-        rows.append([cos_sim])
-        valid_deals.append(dn)
-
-    if not rows:
-        return np.empty((0, 0)), np.array([])
-    return np.array(rows), np.array(valid_deals)
-
-
-def _build_features_diff(emb_data, col_indices, acq_col, tgt_col, deal_set):
-    """Compute element-wise difference (acquirer - target)."""
+def _build_features_abs_diff(emb_data, col_indices, acq_col, tgt_col, deal_set):
+    """Compute element-wise absolute difference |acquirer - target|."""
     valid_deals = []
     rows = []
 
@@ -127,7 +109,25 @@ def _build_features_diff(emb_data, col_indices, acq_col, tgt_col, deal_set):
     for dn in sorted(candidates):
         acq_vec = _get_embedding(emb_data, col_indices, acq_col, dn)
         tgt_vec = _get_embedding(emb_data, col_indices, tgt_col, dn)
-        rows.append(acq_vec - tgt_vec)
+        rows.append(np.abs(acq_vec - tgt_vec))
+        valid_deals.append(dn)
+
+    if not rows:
+        return np.empty((0, 0)), np.array([])
+    return np.stack(rows), np.array(valid_deals)
+
+
+def _build_features_product(emb_data, col_indices, acq_col, tgt_col, deal_set):
+    """Compute element-wise product (acquirer * target)."""
+    valid_deals = []
+    rows = []
+
+    candidates = deal_set & set(col_indices.get(acq_col, {}).keys()) & set(col_indices.get(tgt_col, {}).keys())
+
+    for dn in sorted(candidates):
+        acq_vec = _get_embedding(emb_data, col_indices, acq_col, dn)
+        tgt_vec = _get_embedding(emb_data, col_indices, tgt_col, dn)
+        rows.append(acq_vec * tgt_vec)
         valid_deals.append(dn)
 
     if not rows:
@@ -142,14 +142,14 @@ def _build_features(emb_data, col_indices, input_set, representation, deal_set):
     if representation == "concat":
         return _build_features_concat(emb_data, col_indices, cols, deal_set)
 
-    if representation in ("cosine", "diff"):
+    if representation in ("abs_diff", "product"):
         if input_set not in PAIR_COLS:
             return np.empty((0, 0)), np.array([])
         acq_col, tgt_col = PAIR_COLS[input_set]
-        if representation == "cosine":
-            return _build_features_cosine(emb_data, col_indices, acq_col, tgt_col, deal_set)
+        if representation == "abs_diff":
+            return _build_features_abs_diff(emb_data, col_indices, acq_col, tgt_col, deal_set)
         else:
-            return _build_features_diff(emb_data, col_indices, acq_col, tgt_col, deal_set)
+            return _build_features_product(emb_data, col_indices, acq_col, tgt_col, deal_set)
 
     raise ValueError(f"Unknown representation: {representation}")
 
@@ -196,45 +196,6 @@ def _fit_and_predict(X_train, y_train, X_test, y_test, dn_test, label_map,
             "test_set": test_name,
             "y_true": label_map[dn],
             "y_prob": prob,
-        })
-    return preds
-
-
-def _fit_and_predict_regression(X_train, y_train, X_test, y_test, dn_test,
-                                label_map, input_set, representation,
-                                test_name, seed, model_dir, pca_components=50):
-    """Fit ridge regression for continuous outcome (CARs)."""
-    model_label = f"{input_set}_{representation}"
-
-    steps = [("scaler", StandardScaler())]
-    if X_train.shape[1] > pca_components:
-        n_comp = min(pca_components, X_train.shape[0] - 1)
-        steps.append(("pca", PCA(n_components=n_comp, random_state=seed)))
-    steps.append(("ridge", RidgeCV(alphas=np.logspace(-3, 3, 20), cv=5)))
-    pipe = Pipeline(steps)
-    pipe.fit(X_train, y_train)
-
-    best_alpha = pipe.named_steps["ridge"].alpha_
-    y_pred = pipe.predict(X_test)
-    pca_info = f", PCA={n_comp}" if "pca" in pipe.named_steps else ""
-
-    print(f"    {test_name}: n={len(X_test)}, alpha={best_alpha:.4f}{pca_info}")
-
-    # Save model
-    model_path = model_dir / f"{model_label}_cars.pkl"
-    with open(model_path, "wb") as f:
-        pickle.dump(pipe, f)
-
-    preds = []
-    for dn, yp in zip(dn_test, y_pred):
-        preds.append({
-            "dealnum": dn,
-            "input_set": input_set,
-            "representation": representation,
-            "model": model_label,
-            "test_set": test_name,
-            "y_true": label_map[dn],
-            "y_pred": yp,
         })
     return preds
 
@@ -339,7 +300,7 @@ def main():
 
         for rep in representations:
             # Skip pair-level representations for non-pair input sets
-            if rep in ("cosine", "diff") and input_set not in PAIR_COLS:
+            if rep in ("abs_diff", "product") and input_set not in PAIR_COLS:
                 continue
 
             model_label = f"{input_set}_{rep}"
@@ -382,69 +343,23 @@ def main():
     preds_df.to_parquet(preds_path, index=False)
     print(f"\nSaved {len(preds_df)} keyword predictions -> {preds_path}")
 
-    # ── CARs outcome (ridge regression) ──────────────────────────────────────
-    cars_path = paths["processed"] / "announcement_returns.parquet"
-    if cars_path.exists():
-        cars = pd.read_parquet(cars_path)
-        if len(cars) > 0:
-            car_col = "car_3day"
-            # Normalize dealnum types to match embeddings/labels (str)
-            cars["dealnum"] = cars["dealnum"].astype(float).astype(str)
-            cars = cars.dropna(subset=[car_col])
-            cars_map = dict(zip(cars["dealnum"], cars[car_col]))
-            cars_valid = valid_deals & set(cars["dealnum"])
-            print(f"\n{'#'*60}")
-            print(f"CARs outcome: {len(cars_valid)} deals with embeddings + CARs")
+    # ── Cosine similarities for CARs regression (step 7) ────────────────────
+    print(f"\n{'#'*60}")
+    print("Computing cosine similarities for CARs regression...")
+    cos_rows = []
+    for section, (acq_col, tgt_col) in PAIR_COLS.items():
+        candidates = valid_deals & set(col_indices.get(acq_col, {}).keys()) \
+                                 & set(col_indices.get(tgt_col, {}).keys())
+        for dn in sorted(candidates):
+            acq_vec = _get_embedding(emb_data, col_indices, acq_col, dn).reshape(1, -1)
+            tgt_vec = _get_embedding(emb_data, col_indices, tgt_col, dn).reshape(1, -1)
+            cos_sim = sk_cosine(acq_vec, tgt_vec)[0, 0]
+            cos_rows.append({"dealnum": dn, "section": section, "cosine_sim": cos_sim})
 
-            all_car_preds = []
-            for input_set in fit_cfg["input_sets"]:
-                if input_set not in INPUT_COLS:
-                    continue
-                for rep in representations:
-                    if rep in ("cosine", "diff") and input_set not in PAIR_COLS:
-                        continue
-
-                    print(f"\n{'='*50}")
-                    print(f"CARs | Input set: {input_set}, Representation: {rep}")
-
-                    X_train, dn_train = _build_features(
-                        emb_data, col_indices, input_set, rep,
-                        train_deals & cars_valid
-                    )
-                    if len(X_train) == 0:
-                        print(f"  Skipping: no training data")
-                        continue
-
-                    y_train = np.array([cars_map[d] for d in dn_train])
-                    print(f"  Train: {len(X_train)}, Features: {X_train.shape[1]}")
-
-                    for test_name, test_deal_set in test_sets.items():
-                        X_test, dn_test = _build_features(
-                            emb_data, col_indices, input_set, rep,
-                            test_deal_set & cars_valid
-                        )
-                        if len(X_test) == 0:
-                            print(f"    {test_name}: Skipping (no data)")
-                            continue
-
-                        y_test = np.array([cars_map[d] for d in dn_test])
-
-                        preds = _fit_and_predict_regression(
-                            X_train, y_train, X_test, y_test, dn_test,
-                            cars_map, input_set, rep, test_name, seed,
-                            model_dir, pca_components
-                        )
-                        all_car_preds.extend(preds)
-
-            if all_car_preds:
-                car_preds_df = pd.DataFrame(all_car_preds)
-                car_preds_path = paths["outputs"] / "predictions_cars.parquet"
-                car_preds_df.to_parquet(car_preds_path, index=False)
-                print(f"\nSaved {len(car_preds_df)} CAR predictions -> {car_preds_path}")
-        else:
-            print("\nSkipping CARs: empty announcement_returns.parquet")
-    else:
-        print("\nSkipping CARs: announcement_returns.parquet not found")
+    cos_df = pd.DataFrame(cos_rows)
+    cos_path = paths["outputs"] / "cosine_similarities.parquet"
+    cos_df.to_parquet(cos_path, index=False)
+    print(f"Saved {len(cos_df)} cosine similarities -> {cos_path}")
 
     n_out = preds_df["dealnum"].nunique() if len(preds_df) else 0
     log_step("06_fit", n_in, n_out,

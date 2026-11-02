@@ -1,25 +1,27 @@
-"""Step 7. Evaluate models: AUC per model × test set, baselines, tables and figures.
+"""Step 7. Evaluate models: AUC per model × test set, CARs regression.
 
-Handles multiple representations (concat, cosine, diff) and multiple test sets
-(test_A = in-sample holdout, test_B = out-of-sample).
+Keyword label evaluation:
+  - AUC per model × test set
+  - Same-industry baseline
+  - ROC curves
 
-Baselines:
-  - Habit only: pre-merger keyword hit as sole predictor
-  - Habit + intensity: pre-merger habit dummy + intensity
-  - Same industry: same 2-digit SIC dummy
+CARs regression (second outcome measure):
+  CAR = β₁ × acquirer_skill + β₂ × cosine_sim + ε
+  where acquirer_skill = 1 - P(integration problems) from keyword model.
 
-Reads  : outputs/predictions.parquet, outputs/predictions_cars.parquet,
-         data/processed/labels.parquet, data/interim/deals.parquet
+Reads  : outputs/predictions.parquet, outputs/cosine_similarities.parquet,
+         data/processed/labels.parquet, data/processed/announcement_returns.parquet,
+         data/interim/deals.parquet
 Writes : outputs/results_table.csv, outputs/roc_curves.png,
-         outputs/results_by_test_set.csv, outputs/results_cars.csv
+         outputs/results_by_test_set.csv, outputs/results_cars_regression.csv
 """
 import numpy as np
 import pandas as pd
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
-from sklearn.metrics import roc_auc_score, roc_curve, r2_score
-from scipy.stats import pearsonr, spearmanr
+from sklearn.metrics import roc_auc_score, roc_curve
+import statsmodels.api as sm
 from integrability.config import load
 from integrability.counts import log_step
 
@@ -36,28 +38,6 @@ def _compute_baselines(labels, deals, test_deal_set, test_name):
     test_labels = labels[labels["dealnum"].isin(test_deal_set)].copy()
     test_deal_info = deals[deals["dealnum"].isin(test_deal_set)].copy()
     results = []
-
-    # Habit baseline
-    if "pre_habit" in test_labels.columns and len(test_labels) > 0:
-        habit_auc = _safe_auc(test_labels["hit"], test_labels["pre_habit"])
-        results.append({
-            "model": "baseline_habit",
-            "test_set": test_name,
-            "auc": habit_auc,
-            "n_test": len(test_labels),
-            "n_pos": int(test_labels["hit"].sum()),
-        })
-
-    # Habit intensity baseline
-    if "pre_intensity" in test_labels.columns and len(test_labels) > 0:
-        habit_int_auc = _safe_auc(test_labels["hit"], test_labels["pre_intensity"])
-        results.append({
-            "model": "baseline_habit_intensity",
-            "test_set": test_name,
-            "auc": habit_int_auc,
-            "n_test": len(test_labels),
-            "n_pos": int(test_labels["hit"].sum()),
-        })
 
     # Same-industry baseline
     if "asic3" in test_deal_info.columns and "tsic3" in test_deal_info.columns:
@@ -163,70 +143,75 @@ def main():
         plt.close(fig)
         print(f"ROC curves ({test_name}) -> {fig_path}")
 
-    # ── CARs evaluation ─────────────────────────────────────────────────────
-    car_preds_path = out_dir / "predictions_cars.parquet"
-    if car_preds_path.exists():
-        car_preds = pd.read_parquet(car_preds_path)
-        car_test_sets = sorted(car_preds["test_set"].unique())
-        car_model_names = sorted(car_preds["model"].unique())
+    # ── CARs regression: CAR = β₁ × skill + β₂ × cosine_sim ────────────────
+    cars_path = paths["processed"] / "announcement_returns.parquet"
+    cos_path = out_dir / "cosine_similarities.parquet"
+
+    if cars_path.exists() and cos_path.exists():
+        cars = pd.read_parquet(cars_path)
+        cars["dealnum"] = cars["dealnum"].astype(float).astype(str)
+        cars = cars.dropna(subset=["car_3day"])
+        cars_map = dict(zip(cars["dealnum"], cars["car_3day"]))
+
+        cos_df = pd.read_parquet(cos_path)
+        # Use item1 cosine similarity as default
+        cos_item1 = cos_df[cos_df["section"] == "item1"].set_index("dealnum")["cosine_sim"].to_dict()
+
         print(f"\n{'#'*60}")
-        print(f"CARs predictions: {len(car_preds)} rows")
-        print(f"  Models: {car_model_names}")
-        print(f"  Test sets: {car_test_sets}")
+        print(f"CARs regression: {len(cars_map)} deals with CARs, {len(cos_item1)} with cosine sim")
 
-        car_results = []
-        for test_name in car_test_sets:
-            test_cp = car_preds[car_preds["test_set"] == test_name]
+        car_reg_results = []
+        for test_name in test_set_names:
+            test_preds = preds[preds["test_set"] == test_name]
 
-            for model_name, grp in test_cp.groupby("model"):
-                y_true = grp["y_true"].values
-                y_pred = grp["y_pred"].values
-                n = len(grp)
+            for model_name, grp in test_preds.groupby("model"):
+                # Build regression data: need CAR + prob + cosine_sim for each deal
+                reg_rows = []
+                for _, row in grp.iterrows():
+                    dn = row["dealnum"]
+                    if dn in cars_map and dn in cos_item1:
+                        reg_rows.append({
+                            "car": cars_map[dn],
+                            "skill": 1 - row["y_prob"],
+                            "cosine_sim": cos_item1[dn],
+                        })
 
-                r2 = r2_score(y_true, y_pred) if n > 1 else float("nan")
-                corr, p_val = pearsonr(y_true, y_pred) if n > 2 else (float("nan"), float("nan"))
-                rank_corr, rank_p = spearmanr(y_true, y_pred) if n > 2 else (float("nan"), float("nan"))
+                if len(reg_rows) < 10:
+                    continue
 
-                car_results.append({
+                reg_df = pd.DataFrame(reg_rows)
+                X = sm.add_constant(reg_df[["skill", "cosine_sim"]])
+                y = reg_df["car"]
+
+                ols = sm.OLS(y, X).fit()
+
+                car_reg_results.append({
                     "model": model_name,
                     "test_set": test_name,
-                    "r2": r2,
-                    "pearson_r": corr,
-                    "pearson_p": p_val,
-                    "spearman_r": rank_corr,
-                    "spearman_p": rank_p,
-                    "n_test": n,
+                    "n": len(reg_df),
+                    "r2": ols.rsquared,
+                    "beta_skill": ols.params["skill"],
+                    "t_skill": ols.tvalues["skill"],
+                    "p_skill": ols.pvalues["skill"],
+                    "beta_cosine": ols.params["cosine_sim"],
+                    "t_cosine": ols.tvalues["cosine_sim"],
+                    "p_cosine": ols.pvalues["cosine_sim"],
                 })
-                print(f"  {model_name} [{test_name}]: R²={r2:.3f}, r={corr:.3f} (p={p_val:.3f}), n={n}")
+                print(f"  {model_name} [{test_name}]: n={len(reg_df)}, "
+                      f"β_skill={ols.params['skill']:.4f} (t={ols.tvalues['skill']:.2f}), "
+                      f"β_cosine={ols.params['cosine_sim']:.4f} (t={ols.tvalues['cosine_sim']:.2f}), "
+                      f"R²={ols.rsquared:.4f}")
 
-        car_results_df = pd.DataFrame(car_results)
-        car_results_df = car_results_df.sort_values(["test_set", "r2"], ascending=[True, False])
-        car_path = out_dir / "results_cars.csv"
-        car_results_df.to_csv(car_path, index=False)
-        print(f"\nCARs results -> {car_path}")
-
-        # Scatter plots (one per test set)
-        for test_name in car_test_sets:
-            test_cp = car_preds[car_preds["test_set"] == test_name]
-            n_models = test_cp["model"].nunique()
-            fig, axes = plt.subplots(1, min(n_models, 4), figsize=(5 * min(n_models, 4), 4),
-                                     squeeze=False)
-            for idx, (model_name, grp) in enumerate(test_cp.groupby("model")):
-                if idx >= 4:
-                    break
-                ax = axes[0, idx]
-                ax.scatter(grp["y_true"], grp["y_pred"], alpha=0.5, s=20)
-                ax.set_xlabel("Actual CAR")
-                ax.set_ylabel("Predicted CAR")
-                corr = pearsonr(grp["y_true"], grp["y_pred"])[0]
-                ax.set_title(f"{model_name}\nr={corr:.3f}", fontsize=9)
-
-            fig.suptitle(f"CAR Predictions: {test_name}", fontsize=11)
-            fig.tight_layout()
-            fig_path = out_dir / f"cars_scatter_{test_name}.png"
-            fig.savefig(fig_path, dpi=150, bbox_inches="tight")
-            plt.close(fig)
-            print(f"CAR scatter ({test_name}) -> {fig_path}")
+        if car_reg_results:
+            car_reg_df = pd.DataFrame(car_reg_results)
+            car_reg_path = out_dir / "results_cars_regression.csv"
+            car_reg_df.to_csv(car_reg_path, index=False)
+            print(f"\nCARs regression results -> {car_reg_path}")
+    else:
+        if not cars_path.exists():
+            print("\nSkipping CARs regression: announcement_returns.parquet not found")
+        if not cos_path.exists():
+            print("\nSkipping CARs regression: cosine_similarities.parquet not found")
 
     n_in = preds["dealnum"].nunique()
     log_step("07_evaluate", n_in, n_in, f"models={len(model_names)} test_sets={len(test_set_names)}")

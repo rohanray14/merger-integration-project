@@ -35,5 +35,5 @@ fit:
   split: two_test_sets       # "time", "random", or "two_test_sets"
   seed: 0
   input_sets: [item1, mdna, both, acquirer_only, acquirer_item1]
-  representations: [concat, cosine, diff]   # concat, cosine, diff
+  representations: [concat, abs_diff, product]   # concat, abs_diff, product
   pca_components: 50                         # PCA reduction when features > this

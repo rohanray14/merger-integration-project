@@ -29,3 +29,5 @@ time,step,deals_in,deals_out,dropped,note
 2026-10-22T23:01:22,02_link_filings,1731,1270,461,pre_acq=1552 pre_tgt=1553 post=1476
 2026-11-02T00:49:55,06_fit,485,148,337,"input_sets=['item1', 'mdna', 'both', 'acquirer_only', 'acquirer_item1'] reps=['concat', 'cosine', 'diff']"
 2026-11-02T00:50:01,07_evaluate,148,148,0,models=9 test_sets=2
+2026-11-02T16:41:17,06_fit,485,148,337,"input_sets=['item1', 'mdna', 'both', 'acquirer_only', 'acquirer_item1'] reps=['concat', 'abs_diff', 'product']"
+2026-11-02T16:41:28,07_evaluate,148,148,0,models=9 test_sets=2
