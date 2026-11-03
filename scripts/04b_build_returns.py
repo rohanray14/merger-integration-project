@@ -58,7 +58,7 @@ def _build_acq_permno_map(cfg, deals):
 
     # Map acquirer CUSIP-6 to PERMNO
     deals = deals.copy()
-    deals["acq_permno"] = deals["acusip6"].astype(str).str.strip().map(cusip_to_permno)
+    deals["acq_permno"] = deals["acusip"].astype(str).str.strip().str[:6].map(cusip_to_permno)
 
     return deals
 
