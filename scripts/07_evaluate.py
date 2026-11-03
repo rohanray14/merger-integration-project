@@ -149,22 +149,33 @@ def main():
 
     if cars_path.exists() and cos_path.exists():
         cars = pd.read_parquet(cars_path)
+        # Normalize all dealnums to same string format as predictions
+        def _norm_dn(x):
+            return str(x) if isinstance(x, str) else str(x)
+
+        pred_dns = set(preds["dealnum"].unique())
+        # Determine format from predictions (could be "12345.0" or "12345")
+        sample_dn = next(iter(pred_dns))
+        print(f"  Prediction dealnum format sample: '{sample_dn}'")
+
         cars["dealnum"] = cars["dealnum"].astype(float).astype(str)
         cars = cars.dropna(subset=["car_3day"])
         cars_map = dict(zip(cars["dealnum"], cars["car_3day"]))
 
         cos_df = pd.read_parquet(cos_path)
+        # Ensure cosine sim dealnums match prediction format
+        cos_df["dealnum"] = cos_df["dealnum"].astype(str)
         cos_item1 = cos_df[cos_df["section"] == "item1"].set_index("dealnum")["cosine_sim"].to_dict()
 
-        # Build control variables from deals
-        deals["dealnum_str"] = deals["dealnum"].astype(str)
+        # Build control variables from deals, matching prediction dealnum format
+        deals["dealnum_norm"] = deals["dealnum"].astype(str)
         deals["log_deal_value"] = pd.to_numeric(deals["transvalue"], errors="coerce").apply(
             lambda x: np.log(x) if pd.notna(x) and x > 0 else np.nan)
         deals["same_industry"] = (deals["asic3"].astype(float) == deals["tsic3"].astype(float)).astype(int)
         deals["pct_cash"] = pd.to_numeric(deals["pcash"], errors="coerce").fillna(0)
         controls_map = {}
         for _, row in deals.iterrows():
-            controls_map[row["dealnum_str"]] = {
+            controls_map[row["dealnum_norm"]] = {
                 "log_deal_value": row["log_deal_value"],
                 "same_industry": row["same_industry"],
                 "pct_cash": row["pct_cash"],

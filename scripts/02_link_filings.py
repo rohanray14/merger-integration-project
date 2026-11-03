@@ -89,6 +89,7 @@ def _fetch_all_filings(ciks: list[str]) -> pd.DataFrame:
 def main():
     cfg = load()
     paths = cfg["paths"]
+    sample_cfg = cfg["sample"]
     post_years = cfg["label"]["post_years"]
 
     # ── Load pilot deals ──────────────────────────────────────────────────
@@ -156,8 +157,8 @@ def main():
     pre = pd.DataFrame(pre_rows)
     post = pd.DataFrame(post_rows)
 
-    # ── Staleness filter: drop pre-merger filings older than 18 months ────
-    max_staleness_days = 548  # ~18 months
+    # ── Staleness filter: drop pre-merger filings older than threshold ────
+    max_staleness_days = sample_cfg.get("max_staleness_days", 548)
     if len(pre) > 0:
         # Merge announcement date onto pre-merger filings
         deal_dates = deals[["dealnum", "adate"]].copy()

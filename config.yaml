@@ -16,6 +16,7 @@ sample:
   status: C                  # completed deals only
   require_both_public: true
   form_types: ["10-K", "10-K405", "10-KSB", "10-KSB40"]
+  max_staleness_days: 548              # drop pre-merger filings older than ~18 months
 
 model:
   family: "manelalab/chrono-bert-v1-{y}1231"
