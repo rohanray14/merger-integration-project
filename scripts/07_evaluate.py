@@ -143,7 +143,7 @@ def main():
         plt.close(fig)
         print(f"ROC curves ({test_name}) -> {fig_path}")
 
-    # ── CARs regression: CAR = β₁ × skill + β₂ × cosine_sim ────────────────
+    # ── CARs regression: CAR = β₁×skill + β₂×cosine_sim + controls ─────────
     cars_path = paths["processed"] / "announcement_returns.parquet"
     cos_path = out_dir / "cosine_similarities.parquet"
 
@@ -154,8 +154,21 @@ def main():
         cars_map = dict(zip(cars["dealnum"], cars["car_3day"]))
 
         cos_df = pd.read_parquet(cos_path)
-        # Use item1 cosine similarity as default
         cos_item1 = cos_df[cos_df["section"] == "item1"].set_index("dealnum")["cosine_sim"].to_dict()
+
+        # Build control variables from deals
+        deals["dealnum_str"] = deals["dealnum"].astype(str)
+        deals["log_deal_value"] = pd.to_numeric(deals["transvalue"], errors="coerce").apply(
+            lambda x: np.log(x) if pd.notna(x) and x > 0 else np.nan)
+        deals["same_industry"] = (deals["asic3"].astype(float) == deals["tsic3"].astype(float)).astype(int)
+        deals["pct_cash"] = pd.to_numeric(deals["pcash"], errors="coerce").fillna(0)
+        controls_map = {}
+        for _, row in deals.iterrows():
+            controls_map[row["dealnum_str"]] = {
+                "log_deal_value": row["log_deal_value"],
+                "same_industry": row["same_industry"],
+                "pct_cash": row["pct_cash"],
+            }
 
         print(f"\n{'#'*60}")
         print(f"CARs regression: {len(cars_map)} deals with CARs, {len(cos_item1)} with cosine sim")
@@ -165,22 +178,27 @@ def main():
             test_preds = preds[preds["test_set"] == test_name]
 
             for model_name, grp in test_preds.groupby("model"):
-                # Build regression data: need CAR + prob + cosine_sim for each deal
                 reg_rows = []
                 for _, row in grp.iterrows():
                     dn = row["dealnum"]
-                    if dn in cars_map and dn in cos_item1:
+                    if dn in cars_map and dn in cos_item1 and dn in controls_map:
                         reg_rows.append({
                             "car": cars_map[dn],
                             "skill": 1 - row["y_prob"],
                             "cosine_sim": cos_item1[dn],
+                            **controls_map[dn],
                         })
 
                 if len(reg_rows) < 10:
                     continue
 
-                reg_df = pd.DataFrame(reg_rows)
-                X = sm.add_constant(reg_df[["skill", "cosine_sim"]])
+                reg_df = pd.DataFrame(reg_rows).dropna()
+                if len(reg_df) < 10:
+                    continue
+
+                feature_cols = ["skill", "cosine_sim", "log_deal_value",
+                                "same_industry", "pct_cash"]
+                X = sm.add_constant(reg_df[feature_cols])
                 y = reg_df["car"]
 
                 ols = sm.OLS(y, X).fit()
@@ -196,6 +214,12 @@ def main():
                     "beta_cosine": ols.params["cosine_sim"],
                     "t_cosine": ols.tvalues["cosine_sim"],
                     "p_cosine": ols.pvalues["cosine_sim"],
+                    "beta_log_dv": ols.params["log_deal_value"],
+                    "t_log_dv": ols.tvalues["log_deal_value"],
+                    "beta_same_ind": ols.params["same_industry"],
+                    "t_same_ind": ols.tvalues["same_industry"],
+                    "beta_pct_cash": ols.params["pct_cash"],
+                    "t_pct_cash": ols.tvalues["pct_cash"],
                 })
                 print(f"  {model_name} [{test_name}]: n={len(reg_df)}, "
                       f"β_skill={ols.params['skill']:.4f} (t={ols.tvalues['skill']:.2f}), "

@@ -155,6 +155,24 @@ def main():
 
     pre = pd.DataFrame(pre_rows)
     post = pd.DataFrame(post_rows)
+
+    # ── Staleness filter: drop pre-merger filings older than 18 months ────
+    max_staleness_days = 548  # ~18 months
+    if len(pre) > 0:
+        # Merge announcement date onto pre-merger filings
+        deal_dates = deals[["dealnum", "adate"]].copy()
+        pre = pre.merge(deal_dates, on="dealnum", how="left")
+        pre["staleness_days"] = (pre["adate"] - pre["filingDate"]).dt.days
+
+        print(f"\nPre-merger filing staleness (days before announcement):")
+        print(f"  Mean:   {pre['staleness_days'].mean():.0f}")
+        print(f"  Median: {pre['staleness_days'].median():.0f}")
+        print(f"  Max:    {pre['staleness_days'].max():.0f}")
+        stale = pre["staleness_days"] > max_staleness_days
+        print(f"  Stale (>{max_staleness_days} days): {stale.sum()} filings dropped")
+        pre = pre[~stale].copy()
+        pre = pre.drop(columns=["adate", "staleness_days"])
+
     filings = pd.concat([pre, post], ignore_index=True)
     print(f"\nMatched filings:")
     print(f"  Pre-merger acquirer: {len(pre[pre['role']=='acquirer']) if len(pre) else 0}")

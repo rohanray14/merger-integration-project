@@ -254,11 +254,8 @@ def main():
         train_deals = set(shuffled[:split_idx])
         test_a_deals = set(shuffled[split_idx:])
 
-        # Test B: random sample from OOS years, same size as test A
-        n_test_a = len(test_a_deals)
-        oos_dealnums = np.array(list(oos_deals["dealnum"]))
-        rng.shuffle(oos_dealnums)
-        test_b_deals = set(oos_dealnums[:n_test_a])
+        # Test B: ALL deals from OOS years
+        test_b_deals = set(oos_deals["dealnum"])
 
         print(f"Train ({train_years}): {len(train_deals)}")
         print(f"Test A (holdout from {train_years}): {len(test_a_deals)}")

@@ -7,12 +7,16 @@ Rohan Ray with Prof. Gordon Phillips (Tuck) and Dr. Will (Huaizhou) Li.
 post-merger integration problems, measured with the Hoberg & Phillips (2018)
 page-17 keyword rule on the acquirer's post-merger 10-Ks.
 
-## Pilot 2 changes (this branch)
+## Pilot 3 changes (this branch)
 
-- **Expanded sample:** 2000–2007 (was 2000–2004). Train on 2000–2004, OOS test on 2005–2007.
-- **Two test sets:** Test A = 25% random holdout from train years. Test B = matched-size random sample from 2005–2007.
-- **Three representations:** concat (original), cosine similarity, difference vector (acq − tgt).
-- **Second outcome measure:** Announcement returns (acquirer CARs) via `04b_build_returns.py`.
+- **Expanded sample:** 2000–2008. Train on 2000–2006, OOS test on 2007–2008.
+- **Two test sets:** Test A = 25% random holdout from train years. Test B = ALL deals from 2007–2008.
+- **Three representations:** concat, abs_diff (|acq − tgt|), product (acq × tgt). Replaced cosine and signed diff.
+- **PCA reduction:** 50 components before logistic regression when features > 50.
+- **CARs regression:** OLS with controls: `CAR = β₁×skill + β₂×cosine_sim + β₃×log_deal_value + β₄×same_industry + β₅×pct_cash`.
+  Skill = 1 − P(integration problems) from keyword model. Caveat: generated regressor (Pagan 1984).
+- **Staleness filter:** Pre-merger filings >18 months before announcement are dropped.
+- **Removed habit baselines** (captured serial acquirer reporting style, not deal-specific signal).
 - All-4-sections requirement kept for apples-to-apples comparison across models.
 
 ## Hard rules
@@ -39,13 +43,13 @@ to `outputs/sample_counts.csv`.
 | Step | Script                   | Input                   | Output                                                               |
 | ---- | ------------------------ | ----------------------- | -------------------------------------------------------------------- |
 | 1    | `01_select_deals.py`     | SDC file in `data/raw/` | `data/interim/deals.parquet`                                         |
-| 2    | `02_link_filings.py`     | deals + gvkey-CIK link  | `data/interim/filings.parquet` (pre and post 10-Ks per deal)         |
+| 2    | `02_link_filings.py`     | deals + gvkey-CIK link  | `data/interim/filings.parquet` (pre/post 10-Ks, staleness filter)    |
 | 3    | `03_extract_sections.py` | filings                 | `data/interim/sections.parquet` (Item 1, Item 7, paragraphs)         |
 | 4    | `04_build_labels.py`     | post-merger 10-Ks       | `data/processed/labels.parquet` (dummy, intensity, pre-merger habit) |
 | 4b   | `04b_build_returns.py`   | deals + CRSP daily      | `data/processed/announcement_returns.parquet` (acquirer CARs)        |
 | 5    | `05_embed.py` (GPU)      | sections                | `data/processed/embeddings/`                                         |
-| 6    | `06_fit.py`              | embeddings + labels     | `outputs/models/`, predictions (per representation × test set)       |
-| 7    | `07_evaluate.py`         | predictions             | `outputs/` tables and figures (per test set)                         |
+| 6    | `06_fit.py`              | embeddings + labels     | `outputs/models/`, predictions, cosine similarities                  |
+| 7    | `07_evaluate.py`         | predictions + CARs      | AUC tables, ROC curves, CARs regression with controls                |
 
 
 

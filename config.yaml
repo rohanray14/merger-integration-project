@@ -10,9 +10,9 @@ paths:
   cik_cusip_map: data/raw/cik-cusip-maps.csv             # CUSIP-6 to CIK crosswalk (fallback)
 
 sample:
-  announce_years: [2000, 2001, 2002, 2003, 2004, 2005, 2006, 2007]
-  train_years: [2000, 2001, 2002, 2003, 2004]
-  test_oos_years: [2005, 2006, 2007]
+  announce_years: [2000, 2001, 2002, 2003, 2004, 2005, 2006, 2007, 2008]
+  train_years: [2000, 2001, 2002, 2003, 2004, 2005, 2006]
+  test_oos_years: [2007, 2008]
   status: C                  # completed deals only
   require_both_public: true
   form_types: ["10-K", "10-K405", "10-KSB", "10-KSB40"]
