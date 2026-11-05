@@ -7,7 +7,18 @@ Rohan Ray with Prof. Gordon Phillips (Tuck) and Dr. Will (Huaizhou) Li.
 post-merger integration problems, measured with the Hoberg & Phillips (2018)
 page-17 keyword rule on the acquirer's post-merger 10-Ks.
 
-## Pilot 3 changes (this branch)
+## Pilot 4 changes (this branch)
+
+- **Skill–difficulty decomposition:** Separate acquirer integration skill from deal difficulty.
+  1. Difficulty model: logistic regression on pair-level features only (abs_diff embeddings + cosine sim). No acquirer identity.
+  2. Acquirer skill: rolling average of residuals (actual − predicted) across acquirer's *prior* deals. Temporal ordering enforced.
+  3. Decomposed CARs regression: `CAR = β₁×acquirer_skill + β₂×deal_difficulty + β₃×skill×difficulty + controls`.
+- **New step 8** (`08_skill_difficulty.py`): fits difficulty model, computes rolling skill, outputs `skill_difficulty.parquet`.
+- **Updated step 7**: loads decomposed measures and runs both original and decomposed CARs regressions.
+- Cross-validated predictions for training deals in difficulty model to avoid overfitting.
+- Caveats: generated regressor (Pagan 1984); keyword label as proxy; skill only available for repeat acquirers with prior deals.
+
+## Pilot 3 changes
 
 - **Expanded sample:** 2000–2008. Train on 2000–2006, OOS test on 2007–2008.
 - **Two test sets:** Test A = 25% random holdout from train years. Test B = ALL deals from 2007–2008.
@@ -50,6 +61,7 @@ to `outputs/sample_counts.csv`.
 | 5    | `05_embed.py` (GPU)      | sections                | `data/processed/embeddings/`                                         |
 | 6    | `06_fit.py`              | embeddings + labels     | `outputs/models/`, predictions, cosine similarities                  |
 | 7    | `07_evaluate.py`         | predictions + CARs      | AUC tables, ROC curves, CARs regression with controls                |
+| 8    | `08_skill_difficulty.py` | embeddings + labels     | `outputs/skill_difficulty.parquet` (difficulty, rolling skill)        |
 
 
 

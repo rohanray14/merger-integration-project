@@ -31,3 +31,14 @@ time,step,deals_in,deals_out,dropped,note
 2026-11-02T00:50:01,07_evaluate,148,148,0,models=9 test_sets=2
 2026-11-02T16:41:17,06_fit,485,148,337,"input_sets=['item1', 'mdna', 'both', 'acquirer_only', 'acquirer_item1'] reps=['concat', 'abs_diff', 'product']"
 2026-11-02T16:41:28,07_evaluate,148,148,0,models=9 test_sets=2
+2026-11-02T21:52:33,01_select_deals,162985,1866,161119,"status=C years=[2000, 2001, 2002, 2003, 2004, 2005, 2006, 2007, 2008] both_US both_CIK"
+2026-11-02T22:15:45,02_link_filings,1866,1338,528,pre_acq=1636 pre_tgt=1634 post=1599
+2026-11-02T23:05:35,03_extract_sections,1834,1298,536,paragraphs=1151433
+2026-11-02T23:05:55,04_build_labels,1808,1496,312,dummy_rate=0.228
+2026-11-02T23:06:42,04b_build_returns,1866,1517,349,car_deals=1517
+2026-11-03T11:25:24,06_fit,691,288,403,"input_sets=['item1', 'mdna', 'both', 'acquirer_only', 'acquirer_item1'] reps=['concat', 'abs_diff', 'product']"
+2026-11-03T11:25:36,07_evaluate,288,288,0,models=9 test_sets=2
+2026-11-03T11:27:10,06_fit,691,283,408,"input_sets=['item1', 'mdna', 'both', 'acquirer_only', 'acquirer_item1'] reps=['concat', 'abs_diff', 'product']"
+2026-11-03T11:27:22,07_evaluate,283,283,0,models=9 test_sets=2
+2026-11-04T23:45:59,08_skill_difficulty,691,625,66,difficulty model (pair-level) + rolling acquirer skill
+2026-11-04T23:46:04,07_evaluate,283,283,0,models=9 test_sets=2

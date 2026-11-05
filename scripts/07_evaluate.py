@@ -5,11 +5,14 @@ Keyword label evaluation:
   - Same-industry baseline
   - ROC curves
 
-CARs regression (second outcome measure):
-  CAR = β₁ × acquirer_skill + β₂ × cosine_sim + ε
-  where acquirer_skill = 1 - P(integration problems) from keyword model.
+CARs regressions (second outcome measure):
+  Original:  CAR = β₁ × skill + β₂ × cosine_sim + controls
+  Decomposed: CAR = β₁ × acquirer_skill + β₂ × deal_difficulty
+                   + β₃ × skill×difficulty + controls
+  (uses outputs from 08_skill_difficulty.py when available)
 
 Reads  : outputs/predictions.parquet, outputs/cosine_similarities.parquet,
+         outputs/skill_difficulty.parquet (optional),
          data/processed/labels.parquet, data/processed/announcement_returns.parquet,
          data/interim/deals.parquet
 Writes : outputs/results_table.csv, outputs/roc_curves.png,
@@ -247,6 +250,117 @@ def main():
             print("\nSkipping CARs regression: announcement_returns.parquet not found")
         if not cos_path.exists():
             print("\nSkipping CARs regression: cosine_similarities.parquet not found")
+
+    # ── Decomposed CARs: skill vs difficulty (from 08_skill_difficulty) ───
+    sd_path = out_dir / "skill_difficulty.parquet"
+    if cars_path.exists() and sd_path.exists():
+        print(f"\n{'#'*60}")
+        print("Decomposed CARs regression: skill + difficulty + interaction")
+
+        sd = pd.read_parquet(sd_path)
+        sd["dealnum"] = sd["dealnum"].astype(str)
+
+        # Reload cars if not already loaded
+        if "cars_map" not in dir():
+            cars = pd.read_parquet(cars_path)
+            cars["dealnum"] = cars["dealnum"].astype(float).astype(str)
+            cars = cars.dropna(subset=["car_3day"])
+            cars_map = dict(zip(cars["dealnum"], cars["car_3day"]))
+
+        # Build controls if not already built
+        if "controls_map" not in dir():
+            deals["dealnum_norm"] = deals["dealnum"].astype(str)
+            deals["log_deal_value"] = pd.to_numeric(deals["transvalue"], errors="coerce").apply(
+                lambda x: np.log(x) if pd.notna(x) and x > 0 else np.nan)
+            deals["same_industry"] = (deals["asic3"].astype(float) == deals["tsic3"].astype(float)).astype(int)
+            deals["pct_cash"] = pd.to_numeric(deals["pcash"], errors="coerce").fillna(0)
+            controls_map = {}
+            for _, row in deals.iterrows():
+                controls_map[row["dealnum_norm"]] = {
+                    "log_deal_value": row["log_deal_value"],
+                    "same_industry": row["same_industry"],
+                    "pct_cash": row["pct_cash"],
+                }
+
+        decomp_results = []
+        for test_name in ["test_A", "test_B"]:
+            sd_test = sd[(sd["test_set"] == test_name) & sd["acquirer_skill"].notna()]
+
+            reg_rows = []
+            for _, row in sd_test.iterrows():
+                dn = row["dealnum"]
+                if dn in cars_map and dn in controls_map:
+                    reg_rows.append({
+                        "car": cars_map[dn],
+                        "acquirer_skill": row["acquirer_skill"],
+                        "deal_difficulty": row["difficulty"],
+                        "skill_x_difficulty": row["skill_x_difficulty"],
+                        **controls_map[dn],
+                    })
+
+            if len(reg_rows) < 10:
+                print(f"  {test_name}: skipping (n={len(reg_rows)} < 10)")
+                continue
+
+            reg_df = pd.DataFrame(reg_rows).dropna()
+            if len(reg_df) < 10:
+                print(f"  {test_name}: skipping after dropna (n={len(reg_df)} < 10)")
+                continue
+
+            # Model 1: skill + difficulty + controls (no interaction)
+            cols_no_int = ["acquirer_skill", "deal_difficulty",
+                           "log_deal_value", "same_industry", "pct_cash"]
+            X1 = sm.add_constant(reg_df[cols_no_int])
+            ols1 = sm.OLS(reg_df["car"], X1).fit()
+
+            # Model 2: skill + difficulty + interaction + controls
+            cols_int = ["acquirer_skill", "deal_difficulty", "skill_x_difficulty",
+                        "log_deal_value", "same_industry", "pct_cash"]
+            X2 = sm.add_constant(reg_df[cols_int])
+            ols2 = sm.OLS(reg_df["car"], X2).fit()
+
+            for label, ols, has_interaction in [
+                ("decomp", ols1, False),
+                ("decomp_interaction", ols2, True),
+            ]:
+                row_out = {
+                    "model": label,
+                    "test_set": test_name,
+                    "n": len(reg_df),
+                    "r2": ols.rsquared,
+                    "beta_acq_skill": ols.params["acquirer_skill"],
+                    "t_acq_skill": ols.tvalues["acquirer_skill"],
+                    "p_acq_skill": ols.pvalues["acquirer_skill"],
+                    "beta_difficulty": ols.params["deal_difficulty"],
+                    "t_difficulty": ols.tvalues["deal_difficulty"],
+                    "p_difficulty": ols.pvalues["deal_difficulty"],
+                }
+                if has_interaction:
+                    row_out["beta_interaction"] = ols.params["skill_x_difficulty"]
+                    row_out["t_interaction"] = ols.tvalues["skill_x_difficulty"]
+                    row_out["p_interaction"] = ols.pvalues["skill_x_difficulty"]
+                decomp_results.append(row_out)
+
+            print(f"  {test_name} (n={len(reg_df)}):")
+            print(f"    No interaction: β_skill={ols1.params['acquirer_skill']:.4f} "
+                  f"(t={ols1.tvalues['acquirer_skill']:.2f}), "
+                  f"β_diff={ols1.params['deal_difficulty']:.4f} "
+                  f"(t={ols1.tvalues['deal_difficulty']:.2f}), R²={ols1.rsquared:.4f}")
+            print(f"    With interaction: β_skill={ols2.params['acquirer_skill']:.4f} "
+                  f"(t={ols2.tvalues['acquirer_skill']:.2f}), "
+                  f"β_diff={ols2.params['deal_difficulty']:.4f} "
+                  f"(t={ols2.tvalues['deal_difficulty']:.2f}), "
+                  f"β_int={ols2.params['skill_x_difficulty']:.4f} "
+                  f"(t={ols2.tvalues['skill_x_difficulty']:.2f}), R²={ols2.rsquared:.4f}")
+            print(f"\n    Full OLS summary (with interaction):\n{ols2.summary()}")
+
+        if decomp_results:
+            decomp_df = pd.DataFrame(decomp_results)
+            decomp_path = out_dir / "results_cars_decomposed.csv"
+            decomp_df.to_csv(decomp_path, index=False)
+            print(f"\nDecomposed CARs results -> {decomp_path}")
+    elif not sd_path.exists():
+        print(f"\nSkipping decomposed CARs: run 08_skill_difficulty.py first")
 
     n_in = preds["dealnum"].nunique()
     log_step("07_evaluate", n_in, n_in, f"models={len(model_names)} test_sets={len(test_set_names)}")
