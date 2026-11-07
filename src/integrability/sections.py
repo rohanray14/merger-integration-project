@@ -4,6 +4,8 @@ Section boundaries per AGENTS.md:
   Item 1: from "Item 1. Business" to "Item 1A" or "Item 2".
   Item 7: from "Item 7. Management's Discussion" to "Item 7A" or "Item 8".
 Skip the table-of-contents match (take the occurrence followed by real text).
+
+Handles variant headers: colons, dashes, 10-KSB "Plan of Operation", etc.
 """
 import re
 from html.parser import HTMLParser
@@ -38,42 +40,52 @@ class _HTMLStripper(HTMLParser):
 
 def strip_html(raw: str) -> str:
     """Convert HTML to plain text. If input is already plain text, pass through."""
-    if "<html" not in raw[:5000].lower() and "<body" not in raw[:5000].lower():
+    # Check more of the document for HTML markers (some filings have long SGML preambles)
+    probe = raw[:20000].lower()
+    if "<html" not in probe and "<body" not in probe and "<table" not in probe:
         # Likely plain text wrapped in SEC SGML envelope
         # Still strip any stray tags (e.g. <PAGE>, <TABLE>)
         raw = re.sub(r"<[^>]+>", " ", raw)
         return raw
     s = _HTMLStripper()
     s.feed(raw)
-    return s.get_text()
+    text = s.get_text()
+    # If HTML parsing produced very little text, fall back to regex stripping
+    if len(text.strip()) < 500 and len(raw) > 2000:
+        return re.sub(r"<[^>]+>", " ", raw)
+    return text
 
 
 # ── Section extraction ───────────────────────────────────────────────────────
 
 # Patterns for section starts (case-insensitive)
+# Allow separators: period, colon, dash, em-dash, or just whitespace after item number
+_SEP = r"[\.\:\-\—]?\s+"
+
 _ITEM1_START = re.compile(
-    r"\bitem\s+1\.?\s+"
-    r"(?:business|description\s+of\s+business)[^\n]*",
+    r"\bitem\s+1" + _SEP +
+    r"(?:business|description\s+of\s+(?:the\s+)?business|general)[^\n]*",
     re.I,
 )
 _ITEM1_END = re.compile(
-    r"\bitem\s+1a[\.\s]|\bitem\s+2[\.\s]",
+    r"\bitem\s+1a[\.\:\s]|\bitem\s+2[\.\:\s]",
     re.I,
 )
 
 _ITEM7_START = re.compile(
-    r"\bitem\s+7\.?\s+"
-    r"(?:management|mgmt)[^\n]*",
+    r"\bitem\s+7" + _SEP +
+    r"(?:management|mgmt|financial\s+condition|plan\s+of\s+operation|results\s+of\s+operation)[^\n]*",
     re.I,
 )
 _ITEM7_END = re.compile(
-    r"\bitem\s+7a[\.\s]|\bitem\s+8[\.\s]",
+    r"\bitem\s+7a[\.\:\s]|\bitem\s+8[\.\:\s]",
     re.I,
 )
 
 # Minimum characters after a header for it to count as the real section
-# (not a table-of-contents entry)
-_MIN_SECTION_LEN = 1000
+# (not a table-of-contents entry). Lowered from 1000 to catch shorter but
+# legitimate sections (especially smaller firms / 10-KSB filers).
+_MIN_SECTION_LEN = 400
 
 
 def _find_section(text: str, start_re, end_re) -> str | None:
