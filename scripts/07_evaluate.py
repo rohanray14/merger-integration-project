@@ -252,22 +252,18 @@ def main():
             print("\nSkipping CARs regression: cosine_similarities.parquet not found")
 
     # ── Decomposed CARs: skill vs difficulty (from 08_skill_difficulty) ───
-    sd_path = out_dir / "skill_difficulty.parquet"
-    if cars_path.exists() and sd_path.exists():
-        print(f"\n{'#'*60}")
-        print("Decomposed CARs regression: skill + difficulty + interaction")
+    sd_files = [
+        ("item1_only", out_dir / "skill_difficulty.parquet"),
+        ("item1_mdna", out_dir / "skill_difficulty_all.parquet"),
+    ]
 
-        sd = pd.read_parquet(sd_path)
-        sd["dealnum"] = sd["dealnum"].astype(str)
-
-        # Reload cars if not already loaded
+    # Build controls once
+    if cars_path.exists():
         if "cars_map" not in dir():
             cars = pd.read_parquet(cars_path)
             cars["dealnum"] = cars["dealnum"].astype(float).astype(str)
             cars = cars.dropna(subset=["car_3day"])
             cars_map = dict(zip(cars["dealnum"], cars["car_3day"]))
-
-        # Build controls if not already built
         if "controls_map" not in dir():
             deals["dealnum_norm"] = deals["dealnum"].astype(str)
             deals["log_deal_value"] = pd.to_numeric(deals["transvalue"], errors="coerce").apply(
@@ -282,7 +278,17 @@ def main():
                     "pct_cash": row["pct_cash"],
                 }
 
-        decomp_results = []
+    decomp_results = []
+    for spec_name, sd_path in sd_files:
+        if not cars_path.exists() or not sd_path.exists():
+            continue
+
+        print(f"\n{'#'*60}")
+        print(f"Decomposed CARs [{spec_name}]: skill + difficulty + interaction")
+
+        sd = pd.read_parquet(sd_path)
+        sd["dealnum"] = sd["dealnum"].astype(str)
+
         for test_name in ["test_A", "test_B"]:
             sd_test = sd[(sd["test_set"] == test_name) & sd["acquirer_skill"].notna()]
 
@@ -320,8 +326,8 @@ def main():
             ols2 = sm.OLS(reg_df["car"], X2).fit()
 
             for label, ols, has_interaction in [
-                ("decomp", ols1, False),
-                ("decomp_interaction", ols2, True),
+                (f"{spec_name}_decomp", ols1, False),
+                (f"{spec_name}_decomp_int", ols2, True),
             ]:
                 row_out = {
                     "model": label,
@@ -354,12 +360,12 @@ def main():
                   f"(t={ols2.tvalues['skill_x_difficulty']:.2f}), R²={ols2.rsquared:.4f}")
             print(f"\n    Full OLS summary (with interaction):\n{ols2.summary()}")
 
-        if decomp_results:
-            decomp_df = pd.DataFrame(decomp_results)
-            decomp_path = out_dir / "results_cars_decomposed.csv"
-            decomp_df.to_csv(decomp_path, index=False)
-            print(f"\nDecomposed CARs results -> {decomp_path}")
-    elif not sd_path.exists():
+    if decomp_results:
+        decomp_df = pd.DataFrame(decomp_results)
+        decomp_path = out_dir / "results_cars_decomposed.csv"
+        decomp_df.to_csv(decomp_path, index=False)
+        print(f"\nDecomposed CARs results -> {decomp_path}")
+    elif not any(p.exists() for _, p in sd_files):
         print(f"\nSkipping decomposed CARs: run 08_skill_difficulty.py first")
 
     n_in = preds["dealnum"].nunique()
